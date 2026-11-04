@@ -78,6 +78,9 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: #fff; }}
             font-size: .7rem; font-weight: 700; margin-left: .4rem; vertical-align: middle; }}
 .pk-badge.est {{ background: #555; }}
 
+.pk-step {{ display: inline-block; background: var(--mk-red); color: #fff; border-radius: 50%; width: 1.5rem; height: 1.5rem;
+            line-height: 1.5rem; text-align: center; font-weight: 800; font-size: .85rem; margin-right: .4rem; }}
+
 /* spec chips */
 .pk-spec {{ background: var(--mk-card); border-radius: 8px; padding: .6rem .9rem; border: 1px solid #3a3a3a; }}
 .pk-spec b {{ color: #fff; }}

@@ -59,6 +59,7 @@ class Item:
     pos: Optional[Tuple[int, int]] = None   # cell origin, None until placed
     manual: bool = False
     notes: List[str] = field(default_factory=list)   # shown as layout warnings
+    profile: Optional[object] = None                 # shapely outline (scanned items) for SVG/DXF export
 
 
 def split_cells(total: int, max_per_tile: int) -> List[int]:
@@ -194,6 +195,17 @@ class PackoutOrganizer:
             items[0].notes.append("exact STL shape could not be used; the pocket is its convex hull")
         return items
 
+    def add_scanned_block(self, polygon, name: str = "scanned_tool", grid_units=None,
+                          depth_mm: float = 20.0, **kw) -> List[Item]:
+        """Block cut from a scanned (clearance-expanded) shapely outline, see
+        :func:`src.geometry.create_scanned_contour_block`.  The centred outline is
+        kept on the item so :meth:`export_zip` can write it as SVG/DXF."""
+        gx, gy = grid_units if grid_units else (None, None)
+        block, nx, ny, info = geo.create_scanned_contour_block(polygon, gx, gy, depth_mm, return_info=True, **kw)
+        items = self._register(name, "scan", (block, nx, ny), info["height_mm"], 1)
+        items[0].profile = info["profile"]
+        return items
+
     def add_hub(self, **kw) -> List[Item]:
         built = geo.create_hub_cutout_block(**kw)
         return self._register("usbc_hub", "hub", built, self._height(built[0]), 1)
@@ -282,7 +294,8 @@ class PackoutOrganizer:
             and (z1 - z0) <= self.bed[2] + 1e-6
 
     def export_zip(self, parts: Dict[str, cq.Workplane], fmt: str = "stl") -> bytes:
-        """Zip of printable files. fmt: 'stl', 'step' or 'both'."""
+        """Zip of printable files. fmt: 'stl', 'step' or 'both'.  Scanned items
+        also get their flat outline as ``profiles/<name>.svg`` and ``.dxf``."""
         fmts = ["stl", "step"] if fmt == "both" else [fmt.lower()]
         for f in fmts:
             if f not in ("stl", "step"):
@@ -297,6 +310,11 @@ class PackoutOrganizer:
                     else:
                         cq.exporters.export(wp, p)
                     z.write(p, f"{f}/{name}.{f}")
+            from src import scanner
+            for it in self.items:
+                if it.profile is not None and it.name in parts:
+                    z.writestr(f"profiles/{it.name}.svg", scanner.polygon_to_svg(it.profile))
+                    z.writestr(f"profiles/{it.name}.dxf", scanner.polygon_to_dxf(it.profile))
             z.writestr("README.txt", self.summary())
         return buf.getvalue()
 

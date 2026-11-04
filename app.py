@@ -1,25 +1,35 @@
 """Streamlit UI for the Packout insert generator.  Run: streamlit run app.py"""
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
 import html
 import os
 import tempfile
 
+import cv2
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from shapely import wkt
 import streamlit as st
 
 from cad_engine import PackoutOrganizer
 from src import geometry as geo
 from src import packout_db as pk
 from src import phone_db as ph
+from src import scanner as sc
 from src.geometry import GRID
 from src.theme import RED, apply_theme, style_figure
 
 st.set_page_config(page_title="Packout Insert Builder", page_icon="\U0001F9F0", layout="wide")
 apply_theme()
 ss = st.session_state
+
+
+class _TabAbort(Exception):
+    """Stop rendering the current tab only (st.stop() would also blank the tabs after it)."""
 
 # --------------------------------------------------------------------------- state
 ss.setdefault("tmpdir", tempfile.mkdtemp(prefix="packout_"))
@@ -29,6 +39,8 @@ for k, v in (("custom_x", 203.0), ("custom_y", 305.0), ("custom_z", 95.0),
     ss.setdefault(k, v)
 ss.setdefault("stl_items", [])
 ss.setdefault("stl_preview", None)
+ss.setdefault("scan_items", [])
+ss.setdefault("scan_preview", None)
 
 BED_PRESETS = {
     "Custom": None,
@@ -79,10 +91,35 @@ def cached_preview_mesh(path: str, rot: tuple, max_faces: int = 15000):
     return m.vertices.copy(), m.faces.copy()
 
 
+@st.cache_data(show_spinner=False)
+def cached_sheet_pdf(paper: str) -> bytes:
+    return sc.calibration_sheet_pdf(paper)
+
+
+@st.cache_data(show_spinner=False)
+def cached_demo_photo() -> bytes:
+    ok, buf = cv2.imencode(".jpg", sc.simulate_photo(sc.demo_item_polygon()), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return buf.tobytes()
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_scan(data: bytes, px_per_mm: float, method: str, threshold):
+    return sc.scan_photo(sc.decode_image(data), px_per_mm=px_per_mm, method=method, threshold=threshold)
+
+
 def mesh_figure(v, f, color=RED, height=460):
+    """3D mesh with per-face Lambert shading computed here, so long thin triangles
+    (e.g. a pocket floor with a many-vertex outline) do not get smoothed vertex normals."""
+    v, f = np.asarray(v, float), np.asarray(f)
+    n = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    light = np.array([0.35, -0.45, 0.82])
+    shade = 0.32 + 0.68 * np.clip(n @ (light / np.linalg.norm(light)), 0, 1)
+    base = np.array([int(color[i:i + 2], 16) for i in (1, 3, 5)], float)
+    rgb = np.clip(base[None, :] * shade[:, None], 0, 255).astype(int)
     fig = go.Figure(go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2],
-                              color=color, flatshading=True,
-                              lighting=dict(ambient=0.55, diffuse=0.85, specular=0.2)))
+                              facecolor=[f"rgb({r},{g},{b})" for r, g, b in rgb], flatshading=True,
+                              lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0, fresnel=0.0, roughness=1.0)))
     fig.update_layout(scene=dict(aspectmode="data", xaxis_title="X", yaxis_title="Y", zaxis_title="Z",
                                  bgcolor="#1b1b1b"), margin=dict(l=0, r=0, t=0, b=0))
     return style_figure(fig, height)
@@ -94,8 +131,8 @@ st.markdown(
     "<p>Parametric Gridfinity-style inserts for Milwaukee Packout organizers, split to fit your printer bed.</p></div>",
     unsafe_allow_html=True)
 
-tab_case, tab_phone, tab_stl, tab_out = st.tabs(
-    ["1 · Case & printer", "2 · Phones & hub", "3 · Custom STL blocks", "4 · Layout & export"])
+tab_case, tab_phone, tab_stl, tab_scan, tab_out = st.tabs(
+    ["1 · Case & printer", "2 · Phones & hub", "3 · Custom STL blocks", "📷 Photo Tool Scanner", "4 · Layout & export"])
 
 # =========================================================================== TAB 1
 with tab_case:
@@ -193,7 +230,7 @@ with tab_phone:
                              help="Floor groove under the hub plus tunnels out of the sides.")
 
 # =========================================================================== TAB 3
-with tab_stl:
+with tab_stl, contextlib.suppress(_TabAbort):
     st.subheader("Universal STL block")
     st.caption("Drop any STL (charger, meter, tool, battery adapter). It is cut out of a grid block with your chosen clearance.")
     up = st.file_uploader("Drag & drop an .stl file", type=["stl"], key="stl_up")
@@ -210,7 +247,7 @@ with tab_stl:
             info = cached_analysis(path, rot)
         except Exception as e:
             st.error(f"Could not read that STL: {e}")
-            st.stop()
+            raise _TabAbort
         m = st.columns(5)
         m[0].metric("X", f"{info['size'][0]:.1f} mm")
         m[1].metric("Y", f"{info['size'][1]:.1f} mm")
@@ -260,7 +297,7 @@ with tab_stl:
                 geo.create_custom_stl_subtraction_block(path, cfg["gx"], cfg["gy"], cfg["clearance"], False,
                                                         rotation_deg=rot)      # validate fit before accepting
                 base, n = cfg["name"] or "stl_block", 2
-                taken = {i["name"] for i in ss.stl_items}
+                taken = {i["name"] for i in ss.stl_items} | {i["name"] for i in ss.scan_items}
                 while cfg["name"] in taken:
                     cfg["name"], n = f"{base}_{n}", n + 1
                 ss.stl_items.append(cfg)
@@ -286,6 +323,162 @@ with tab_stl:
                 ss.stl_items.pop(i)
                 st.rerun()
 
+# =========================================================================== TAB: PHOTO SCANNER
+with tab_scan:
+    st.subheader("Photo tool scanner")
+    st.caption("Place any item on a printed calibration sheet, photograph it, and get a matching cut-out block.")
+
+    # ---- step 1: calibration sheet
+    st.markdown('<span class="pk-step">1</span> **Print the calibration sheet**', unsafe_allow_html=True)
+    c = st.columns([1, 1, 2])
+    paper = c[0].radio("Paper", ["A4", "Letter"], horizontal=True, key="scan_paper")
+    c[1].download_button("Download sheet (PDF)", cached_sheet_pdf(paper), file_name=f"packout_calibration_sheet_{paper}.pdf",
+                         mime="application/pdf", type="primary", key="dl_sheet")
+    c[2].caption("Print at 100% (Actual size, not fit-to-page). The square border should measure 200 mm; "
+                 "if it does not, enter the measured size below.")
+
+    # ---- step 2: photo
+    st.markdown('<span class="pk-step">2</span> **Upload a photo**', unsafe_allow_html=True)
+    photo_up = st.file_uploader("Drag & drop a photo of the item on the sheet", type=["jpg", "jpeg", "png", "webp"], key="scan_up")
+    use_demo = st.checkbox("Use a synthetic demo photo (pliers on the sheet)", value=False, key="scan_demo",
+                           help="Lets you try the scanner without printing anything.")
+    with st.expander("Scan settings"):
+        c = st.columns(4)
+        measured_border = c[0].number_input("Measured printed border (mm)", 150.0, 260.0, 200.0, 0.5, key="scan_border",
+                                            help="Nominal 200 mm. Enter what a ruler says if your printer scaled the page.")
+        scan_ppm = c[1].select_slider("Analysis resolution (px/mm)", [4.0, 5.0, 6.0, 8.0], 5.0, key="scan_ppm")
+        scan_method = c[2].radio("Edge detection", ["otsu", "adaptive"], horizontal=True, key="scan_method",
+                                 help="Adaptive copes better with very uneven lighting.")
+        thr_manual = c[3].checkbox("Manual threshold", False, key="scan_thr_on")
+        scan_thr = c[3].slider("Threshold", 10, 200, 60, key="scan_thr") if thr_manual else None
+
+    data = photo_up.getvalue() if photo_up is not None else (cached_demo_photo() if use_demo else None)
+    if data is None:
+        st.info("Upload a photo (or tick the demo photo) to detect the outline.")
+    else:
+        try:
+            with st.spinner("Detecting markers and outline..."):
+                scan = cached_scan(data, scan_ppm, scan_method, scan_thr)
+        except sc.ScanError as e:
+            st.error(str(e))
+            scan = None
+        if scan is not None:
+            for w in scan.warnings:
+                st.warning(w)
+            print_scale = measured_border / sc.WORKSPACE_MM
+            sx, sy = (v * print_scale for v in (scan.polygon.bounds[2] - scan.polygon.bounds[0],
+                                                scan.polygon.bounds[3] - scan.polygon.bounds[1]))
+            m = st.columns(4)
+            m[0].metric("Markers", f"{len(scan.marker_ids)} / 4")
+            m[1].metric("Photo scale", f"{scan.source_mm_per_px:.3f} mm/px", f"fit error {scan.reproj_rms_mm:.2f} mm", delta_color="off")
+            m[2].metric("Item size", f"{sx:.1f} × {sy:.1f} mm")
+            m[3].metric("Edge threshold", f"{scan.threshold:.0f} / 255")
+
+            left, right = st.columns([3, 2])
+            with right:
+                st.markdown('<span class="pk-step">3</span> **Cut-out settings**', unsafe_allow_html=True)
+                ix, iy, iz = current_interior()
+                max_depth = max(8.0, min(80.0, float(int(iz - 2 - geo.FOOT_H - 1.5))))
+                depth = st.slider("Cutout depth Z (mm)", 5.0, max_depth, min(20.0, max_depth), 1.0, key="scan_depth",
+                                  help=f"Pocket depth. The block is {geo.FOOT_H + 1.5:.2f} mm taller than this (feet + floor).")
+                clr = st.slider("Clearance margin (mm)", 0.0, 2.0, 0.6, 0.05, key="scan_clr")
+                scoops_on = st.checkbox("Finger-pull scoops", False, key="scan_scoops")
+                scoop_r, scoop_sides = 12.0, ("left", "right")
+                if scoops_on:
+                    scoop_r = st.slider("Scoop radius (mm)", 6.0, 20.0, 12.0, 1.0, key="scan_scoop_r")
+                    labels = st.multiselect("Scoop sides", ["Left", "Right", "Top", "Bottom"], ["Left", "Right"], key="scan_scoop_sides")
+                    scoop_sides = tuple(s.lower() for s in labels)
+                cutout = sc.prepare_cutout(scan.polygon, clr, scoops=bool(scoops_on and scoop_sides), scoop_radius_mm=scoop_r,
+                                           scoop_sides=scoop_sides or ("left", "right"), print_scale=print_scale)
+                bx0, by0, bx1, by1 = cutout.bounds
+                need = (geo._cells_for(bx1 - bx0, 2.5), geo._cells_for(by1 - by0, 2.5))
+                sig = hashlib.sha1(data).hexdigest()[:8]
+                c = st.columns(2)
+                gx = c[0].number_input("Grid X (cells)", 1, 10, need[0], key=f"sgx_{sig}_{need[0]}")
+                gy = c[1].number_input("Grid Y (cells)", 1, 10, need[1], key=f"sgy_{sig}_{need[1]}")
+                st.caption(f"Cut-out outline {bx1 - bx0:.1f} × {by1 - by0:.1f} mm; smallest grid {need[0]} × {need[1]}.")
+                if gx < need[0] or gy < need[1]:
+                    st.warning(f"Grid {gx} × {gy} is too small for this outline (needs at least {need[0]} × {need[1]}).")
+                name = st.text_input("Block name", "scanned_tool", key="scan_name")
+                c = st.columns(2)
+                do_prev = c[0].button("Preview block", key="scan_prev")
+                do_add = c[1].button("Add to project", type="primary", key="scan_add")
+
+            with left:
+                rgb = cv2.cvtColor(scan.warped, cv2.COLOR_BGR2RGB)
+                ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                uri = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
+                fig = go.Figure()
+                fig.add_layout_image(source=uri, xref="x", yref="y", x=0, y=0, sizex=sc.WORKSPACE_MM, sizey=sc.WORKSPACE_MM,
+                                     xanchor="left", yanchor="top", layer="below")
+
+                def ring_xy(coords):
+                    xs = [p[0] for p in coords]
+                    ys = [sc.WORKSPACE_MM - p[1] for p in coords]            # CAD (y up) -> image (y down)
+                    return xs, ys
+                for k, ring in enumerate([scan.polygon.exterior] + list(scan.polygon.interiors)):
+                    xs, ys = ring_xy(ring.coords)
+                    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=RED, width=2.5),
+                                             name="Detected edge", legendgroup="edge", showlegend=(k == 0),
+                                             hovertemplate="x %{x:.1f} mm, y %{y:.1f} mm<extra>detected edge</extra>"))
+                for k, ring in enumerate([cutout.exterior] + list(cutout.interiors)):
+                    xs, ys = ring_xy(ring.coords)
+                    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="#FFFFFF", width=1.5, dash="dash"),
+                                             name="With clearance", legendgroup="clr", showlegend=(k == 0), hoverinfo="skip"))
+                fig.update_xaxes(range=[0, sc.WORKSPACE_MM], title="mm", constrain="domain", showgrid=False)
+                fig.update_yaxes(range=[sc.WORKSPACE_MM, 0], scaleanchor="x", title="mm", showgrid=False)
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.12, x=0))
+                st.plotly_chart(style_figure(fig, 600), use_container_width=True)
+                st.caption("Perspective-corrected photo. Red = detected edge; dashed white = cut-out outline with clearance"
+                           + (" and scoops." if scoops_on else "."))
+
+            def build_scan_block(poly, gx_, gy_, depth_):
+                blk, nx, ny, binfo = geo.create_scanned_contour_block(poly, int(gx_), int(gy_), float(depth_), return_info=True)
+                return blk, nx, ny, binfo
+
+            if do_prev:
+                try:
+                    with st.spinner("Cutting block..."):
+                        blk, nx, ny, binfo = build_scan_block(cutout, gx, gy, depth)
+                        mesh = PackoutOrganizer.to_mesh(blk, 0.05, 0.3)
+                        stl_bytes = PackoutOrganizer.to_mesh(blk, 0.01, 0.1).export(file_type="stl")
+                    ss.scan_preview = dict(v=mesh.vertices, f=mesh.faces, cells=(nx, ny), height=binfo["height_mm"], stl=stl_bytes,
+                                           svg=sc.polygon_to_svg(binfo["profile"]), dxf=sc.polygon_to_dxf(binfo["profile"]),
+                                           name=name or "scanned_tool")
+                except ValueError as e:
+                    ss.scan_preview = None
+                    st.error(str(e))
+            if do_add:
+                try:
+                    build_scan_block(cutout, gx, gy, depth)                  # validate before accepting
+                    base, n = name or "scanned_tool", 2
+                    nm = base
+                    while nm in {i["name"] for i in ss.stl_items} | {i["name"] for i in ss.scan_items}:
+                        nm, n = f"{base}_{n}", n + 1
+                    ss.scan_items.append(dict(name=nm, wkt=cutout.wkt, gx=int(gx), gy=int(gy), depth=float(depth)))
+                    st.success(f"Added {nm}. Generate the project in the Layout & export tab.")
+                except ValueError as e:
+                    st.error(str(e))
+
+            p = ss.scan_preview
+            if p:
+                st.markdown(f"**Generated block** · {p['cells'][0]} × {p['cells'][1]} cells · {p['height']:.1f} mm tall")
+                st.plotly_chart(mesh_figure(p["v"], p["f"], "#C8C8C8", 420), use_container_width=True)
+                c = st.columns(3)
+                c[0].download_button("Download STL", p["stl"], file_name=f"{p['name']}.stl", mime="model/stl", key="dl_scan_stl")
+                c[1].download_button("Download profile SVG", p["svg"], file_name=f"{p['name']}.svg", mime="image/svg+xml", key="dl_scan_svg")
+                c[2].download_button("Download profile DXF", p["dxf"], file_name=f"{p['name']}.dxf", mime="application/dxf", key="dl_scan_dxf")
+
+    if ss.scan_items:
+        st.subheader("Scanned blocks in this project")
+        for i, it in enumerate(list(ss.scan_items)):
+            c = st.columns([4, 1])
+            c[0].markdown(f'<div class="pk-spec"><b>{html.escape(it["name"])}</b> · {it["gx"]}×{it["gy"]} cells · '
+                          f'depth {it["depth"]:.0f} mm</div>', unsafe_allow_html=True)
+            if c[1].button("Remove", key=f"rm_scan_{i}_{it['name']}"):
+                ss.scan_items.pop(i)
+                st.rerun()
+
 # =========================================================================== TAB 4
 with tab_out:
     def build():
@@ -301,6 +494,8 @@ with tab_out:
             org.add_stl_insert(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
                                clearance_mm=it["clearance"], cable_channel=it["cable_side"],
                                rotation_deg=it["rot"], cable_floor_groove=it["cable_floor"], height_mm=it["height"])
+        for it in ss.scan_items:
+            org.add_scanned_block(wkt.loads(it["wkt"]), name=it["name"], grid_units=(it["gx"], it["gy"]), depth_mm=it["depth"])
         if use_hub:
             org.add_hub(hub_dims=hub_dims, cable_pass_through=cable_pt)
         ss.org, ss.parts, ss.meshes, ss.zip = org, org.build_parts(), {}, {}
@@ -310,7 +505,7 @@ with tab_out:
 
     st.subheader("Generate")
     st.caption(f"{ss.case_key if ss.case_key == pk.CUSTOM_KEY else pk.CASES[ss.case_key].label} · "
-               f"{int(n_phones)} phone slot(s) · {len(ss.stl_items)} custom STL block(s) · hub {'on' if use_hub else 'off'}")
+               f"{int(n_phones)} phone slot(s) · {len(ss.stl_items)} custom STL block(s) · {len(ss.scan_items)} scanned block(s) · hub {'on' if use_hub else 'off'}")
     if st.button("Generate project", type="primary", key="gen"):
         try:
             with st.spinner("Building CAD geometry..."):

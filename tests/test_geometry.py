@@ -260,3 +260,91 @@ def test_custom_stl_block_validation(bar_stl):
 def test_custom_stl_return_info(bar_stl):
     *_, info = geo.create_custom_stl_subtraction_block(bar_stl, return_info=True)
     assert info["mode"] == "mesh"
+
+
+# ---- scanned contour block ------------------------------------------------------
+def _shapely():
+    import shapely.geometry as sg
+    return sg
+
+
+def test_scanned_block_removes_area_times_depth():
+    sg = _shapely()
+    poly = sg.box(0, 0, 70, 30)
+    blk, nx, ny, info = geo.create_scanned_contour_block(poly, depth_mm=25, return_info=True)
+    assert (nx, ny) == (2, 1)
+    assert_printable(blk)
+    base = geo.create_base_block(nx, ny, info["height_mm"])
+    assert vol(base) - vol(blk) == pytest.approx(70 * 30 * 25, rel=1e-3)
+    assert info["height_mm"] == pytest.approx(FOOT_H + 1.5 + 25)
+    assert info["area_mm2"] == pytest.approx(2100)
+
+
+def test_scanned_block_is_centred_and_open_at_top():
+    sg = _shapely()
+    blk, nx, ny = geo.create_scanned_contour_block(sg.box(500, -80, 560, -50), 2, 1, depth_mm=20)   # far from origin
+    cx, cy = nx * GRID / 2, ny * GRID / 2
+    top = FOOT_H + 1.5 + 20
+    assert not inside(blk, cx, cy, top - 0.5) and not inside(blk, cx, cy, FOOT_H + 1.5 + 0.5)
+    assert not inside(blk, cx + 29, cy + 14, top - 1)
+    assert inside(blk, cx + 33, cy, top - 1)                   # wall beyond the 60 mm outline
+    assert inside(blk, cx, cy, FOOT_H + 0.5)                   # solid floor under the pocket
+
+
+def test_scanned_block_follows_outline_shape():
+    sg = _shapely()
+    ell = sg.Polygon([(0, 0), (60, 0), (60, 15), (20, 15), (20, 40), (0, 40)])          # L shape
+    blk, nx, ny = geo.create_scanned_contour_block(ell, 2, 2, depth_mm=15)
+    ox, oy = nx * GRID / 2 - 30, ny * GRID / 2 - 20            # polygon bbox centre is (30, 20)
+    z = FOOT_H + 1.5 + 10
+    assert not inside(blk, ox + 50, oy + 5, z)                 # inside the foot of the L
+    assert inside(blk, ox + 50, oy + 30, z)                    # the notch of the L stays solid
+    assert not inside(blk, ox + 10, oy + 35, z)                # inside the upright of the L
+
+
+def test_scanned_block_keeps_islands():
+    sg = _shapely()
+    ring = sg.box(0, 0, 70, 40).difference(sg.box(25, 12, 45, 28))
+    blk, nx, ny = geo.create_scanned_contour_block(ring, depth_mm=15)
+    assert_printable(blk)
+    cx, cy, z = nx * GRID / 2, ny * GRID / 2, FOOT_H + 1.5 + 10
+    assert inside(blk, cx, cy, z)                              # island post is solid
+    assert not inside(blk, cx - 30, cy, z)                     # ring body is cut
+
+
+def test_scanned_block_complex_outline_is_printable():
+    from src import scanner
+    poly = scanner.prepare_cutout(scanner.demo_item_polygon(), 0.6, scoops=True)
+    assert len(poly.exterior.coords) > 100
+    blk, nx, ny = geo.create_scanned_contour_block(poly, depth_mm=20)
+    assert_printable(blk)
+
+
+def test_scanned_block_validation():
+    sg = _shapely()
+    p = sg.box(0, 0, 60, 30)
+    with pytest.raises(ValueError, match="walls"):
+        geo.create_scanned_contour_block(p, 1, 1, depth_mm=10)
+    with pytest.raises(ValueError, match="both block_grid"):
+        geo.create_scanned_contour_block(p, 2, None, depth_mm=10)
+    with pytest.raises(ValueError, match="depth_mm"):
+        geo.create_scanned_contour_block(p, depth_mm=0)
+    with pytest.raises(ValueError, match="above the feet"):
+        geo.create_scanned_contour_block(p, depth_mm=30, height_mm=30)
+    with pytest.raises(ValueError, match="MultiPolygon"):
+        geo.create_scanned_contour_block(sg.MultiPolygon([sg.box(0, 0, 5, 5), sg.box(10, 10, 15, 15)]))
+    with pytest.raises(ValueError, match="shapely Polygon"):
+        geo.create_scanned_contour_block([(0, 0), (1, 1)])
+    with pytest.raises(ValueError, match="empty or smaller"):
+        geo.create_scanned_contour_block(sg.box(0, 0, 0.5, 0.5))
+    with pytest.raises(ValueError, match="grid size"):
+        geo.create_scanned_contour_block(p, 0, 1, depth_mm=10)
+
+
+def test_scanned_block_explicit_height_and_bowtie_repair():
+    sg = _shapely()
+    bow = sg.Polygon([(0, 0), (40, 30), (40, 0), (0, 30)])       # self-intersecting 'bow tie'
+    blk, *_ = geo.create_scanned_contour_block(bow, depth_mm=10)  # repaired by buffer(0)
+    assert_printable(blk)
+    tall, nx, ny, info = geo.create_scanned_contour_block(sg.box(0, 0, 40, 20), depth_mm=10, height_mm=40, return_info=True)
+    assert info["height_mm"] == 40 and geo.exact_bbox(tall)[5] == pytest.approx(40)

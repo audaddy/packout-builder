@@ -432,6 +432,93 @@ def create_custom_stl_subtraction_block(
 
 
 # --------------------------------------------------------------------------- #
+# Scanned contour (photo scanner) -> block
+# --------------------------------------------------------------------------- #
+def _ring_points(coords, tol: float = 1e-6) -> List[Tuple[float, float]]:
+    """Closed ring -> open point list without repeated/zero-length edges."""
+    pts: List[Tuple[float, float]] = []
+    for x, y in coords:
+        if not pts or abs(x - pts[-1][0]) > tol or abs(y - pts[-1][1]) > tol:
+            pts.append((float(x), float(y)))
+    if len(pts) > 1 and abs(pts[0][0] - pts[-1][0]) <= tol and abs(pts[0][1] - pts[-1][1]) <= tol:
+        pts.pop()
+    return pts
+
+
+def create_scanned_contour_block(
+    shapely_polygon,
+    block_grid_x: Optional[int] = None,
+    block_grid_y: Optional[int] = None,
+    depth_mm: float = 20.0,
+    height_mm: Optional[float] = None,
+    floor_clearance: float = 1.5,
+    wall_min: float = 2.5,
+    return_info: bool = False,
+):
+    """Block with a scanned 2D outline cut ``depth_mm`` deep from its top face.
+
+    ``shapely_polygon`` is the (already clearance-expanded) cutter profile in mm,
+    y up; it is centred in the block.  Interior rings (islands, e.g. the loops
+    of scissors) are kept as solid posts.  Grid size defaults to the smallest
+    that leaves ``wall_min`` walls.  The block height defaults to
+    ``FOOT_H + floor_clearance + depth_mm`` (pocket floor just above the feet);
+    a smaller ``height_mm`` is rejected if the floor would reach the feet.
+
+    Returns ``(block, nx, ny)`` or, with ``return_info``,
+    ``(block, nx, ny, info)`` where ``info['profile']`` is the centred polygon
+    (block coordinates) and ``info['area_mm2']`` its area.
+    """
+    from shapely import affinity
+    from shapely.geometry import MultiPolygon, Polygon
+
+    if isinstance(shapely_polygon, MultiPolygon):
+        raise ValueError("profile must be a single polygon, got a MultiPolygon")
+    if not isinstance(shapely_polygon, Polygon):
+        raise ValueError("shapely_polygon must be a shapely Polygon")
+    poly = shapely_polygon if shapely_polygon.is_valid else shapely_polygon.buffer(0)
+    if not isinstance(poly, Polygon) or poly.is_empty or poly.area < 1.0:
+        raise ValueError("profile polygon is empty or smaller than 1 mm^2")
+    if depth_mm <= 0:
+        raise ValueError("depth_mm must be > 0")
+    if (block_grid_x is None) != (block_grid_y is None):
+        raise ValueError("give both block_grid_x and block_grid_y, or neither")
+
+    minx, miny, maxx, maxy = poly.bounds
+    sx, sy = maxx - minx, maxy - miny
+    nx, ny = (int(block_grid_x), int(block_grid_y)) if block_grid_x is not None else (
+        _cells_for(sx, wall_min), _cells_for(sy, wall_min))
+    if nx < 1 or ny < 1:
+        raise ValueError("grid size must be >= 1")
+    if (nx * GRID - sx) / 2 < wall_min - 1e-6 or (ny * GRID - sy) / 2 < wall_min - 1e-6:
+        raise ValueError(f"grid {nx}x{ny} ({nx * GRID:.0f}x{ny * GRID:.0f} mm) leaves walls < {wall_min} mm around "
+                         f"the {sx:.1f}x{sy:.1f} mm outline; use at least "
+                         f"{_cells_for(sx, wall_min)}x{_cells_for(sy, wall_min)}")
+
+    H = height_mm if height_mm else FOOT_H + floor_clearance + depth_mm
+    floor_z = H - depth_mm
+    if floor_z < FOOT_H + 1.0 - 1e-6:
+        raise ValueError(f"depth_mm {depth_mm:.1f} leaves a pocket floor at z={floor_z:.1f}, below the "
+                         f"{FOOT_H + 1.0:.2f} mm needed above the feet; reduce depth or raise height_mm")
+
+    centred = affinity.translate(poly, nx * GRID / 2 - (minx + maxx) / 2, ny * GRID / 2 - (miny + maxy) / 2)
+    cutter = cq.Workplane("XY").workplane(offset=floor_z)
+    for ring in [centred.exterior] + list(centred.interiors):
+        pts = _ring_points(ring.coords)
+        if len(pts) < 3:
+            raise ValueError("profile has a degenerate ring")
+        cutter = cutter.polyline(pts).close()
+    cutter = cutter.extrude(depth_mm + 1.0)       # +1 mm so the cut opens cleanly through the top face
+
+    block = create_base_block(nx, ny, H).cut(cutter).clean()
+    if not block.val().isValid():
+        raise ValueError("the scanned outline produced an invalid solid (self-intersecting profile?)")
+    if not return_info:
+        return block, nx, ny
+    return block, nx, ny, {"profile": centred, "area_mm2": float(centred.area), "depth_mm": float(depth_mm),
+                           "height_mm": float(H)}
+
+
+# --------------------------------------------------------------------------- #
 # USB-C hub
 # --------------------------------------------------------------------------- #
 def create_hub_cutout_block(

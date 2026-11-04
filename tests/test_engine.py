@@ -151,3 +151,39 @@ def test_flat_phone_block_exceeds_small_bed():
     o = PackoutOrganizer(get_case("8431").label, bed=(200, 200, 200))
     with pytest.raises(ValueError, match="exceeds the printer bed"):
         o.add_phone_slots(1, phone="Samsung Galaxy S23 Ultra", angle=82, height_mm=43)
+
+
+def test_scanned_block_in_engine_and_profile_export():
+    import ezdxf
+    from shapely.geometry import box
+    o = PackoutOrganizer("Organizer #48-22-8430", bed=(220, 220, 250))
+    o.add_scanned_block(box(0, 0, 80, 30), name="pliers", depth_mm=22)
+    o.add_hub()
+    assert o.items[0].kind == "scan" and o.items[0].profile is not None
+    assert o.layout() == []
+    parts = o.build_parts()
+    assert o.check_part(parts["pliers"])["watertight"]
+    names = zipfile.ZipFile(io.BytesIO(o.export_zip(parts, "stl"))).namelist()
+    assert "stl/pliers.stl" in names and "profiles/pliers.svg" in names and "profiles/pliers.dxf" in names
+    assert not any(n.startswith("profiles/usbc") for n in names)
+    z = zipfile.ZipFile(io.BytesIO(o.export_zip(parts, "stl")))
+    doc = ezdxf.read(io.StringIO(z.read("profiles/pliers.dxf").decode()))
+    assert len(list(doc.modelspace().query("LWPOLYLINE"))) == 1
+
+
+def test_scanned_block_too_big_for_bed_or_depth():
+    from shapely.geometry import box
+    o = PackoutOrganizer("Organizer #48-22-8430", bed=(100, 100, 250))
+    with pytest.raises(ValueError, match="exceeds the printer bed"):
+        o.add_scanned_block(box(0, 0, 150, 30), depth_mm=20)
+    o2 = PackoutOrganizer("Organizer #48-22-8430", bed=(220, 220, 40))
+    with pytest.raises(ValueError, match="exceeds bed Z"):
+        o2.add_scanned_block(box(0, 0, 60, 30), depth_mm=45)
+
+
+def test_scanned_block_height_warning_vs_low_profile_case():
+    from shapely.geometry import box
+    from src.packout_db import get_case
+    o = PackoutOrganizer(get_case("8431").label)          # 45.7 mm interior
+    o.add_scanned_block(box(0, 0, 60, 30), depth_mm=40)   # block = 4.75 + 1.5 + 40 = 46.25 mm
+    assert any("interior height" in w for w in o.layout())
