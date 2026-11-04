@@ -1,0 +1,9 @@
+cadquery>=2.4
+trimesh>=4.0
+numpy
+networkx             # trimesh mesh repair (fill_holes, fix_normals)
+pandas
+plotly>=5.18
+streamlit>=1.30
+fast-simplification>=0.1.9   # STL decimation (0.1.9 is the newest release that imports on Python 3.9)
+pytest
