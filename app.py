@@ -97,6 +97,11 @@ def cached_sheet_pdf(paper: str) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
+def cached_sheet_png(paper: str) -> bytes:
+    return sc.calibration_sheet_png(paper)
+
+
+@st.cache_data(show_spinner=False)
 def cached_demo_photo() -> bytes:
     ok, buf = cv2.imencode(".jpg", sc.simulate_photo(sc.demo_item_polygon()), [cv2.IMWRITE_JPEG_QUALITY, 90])
     return buf.tobytes()
@@ -156,8 +161,10 @@ with tab_case:
                 else:
                     body = ('<div class="pk-name">Custom dimensions</div><div class="pk-part">Any case or tray</div>'
                             '<div class="pk-dims">You set L × W × D<span>in millimetres</span></div>')
-                st.markdown(f'<div class="pk-card{" selected" if sel else ""}"><div class="pk-img">'
-                            f'{pk.thumbnail_svg(case, sel)}</div>{body}</div>', unsafe_allow_html=True)
+                uri = pk.photo_data_uri(key)             # real product photo; offline SVG drawing as the fallback
+                img = (f'<div class="pk-img photo"><img src="{uri}" alt="{html.escape(case.label)}"/></div>' if uri
+                       else f'<div class="pk-img">{pk.thumbnail_svg(case, sel)}</div>')
+                st.markdown(f'<div class="pk-card{" selected" if sel else ""}">{img}{body}</div>', unsafe_allow_html=True)
                 if st.button("✓ Selected" if sel else "Select", key=f"sel_{key}",
                              type="primary" if sel else "secondary", width="stretch"):
                     ss.case_key = key
@@ -330,12 +337,17 @@ with tab_scan:
 
     # ---- step 1: calibration sheet
     st.markdown('<span class="pk-step">1</span> **Print the calibration sheet**', unsafe_allow_html=True)
-    c = st.columns([1, 1, 2])
-    paper = c[0].radio("Paper", ["A4", "Letter"], horizontal=True, key="scan_paper")
-    c[1].download_button("Download sheet (PDF)", cached_sheet_pdf(paper), file_name=f"packout_calibration_sheet_{paper}.pdf",
-                         mime="application/pdf", type="primary", key="dl_sheet")
-    c[2].caption("Print at 100% (Actual size, not fit-to-page). The square border should measure 200 mm; "
-                 "if it does not, enter the measured size below.")
+    paper = st.radio("Paper", ["A4", "Letter"], horizontal=True, key="scan_paper")
+    c = st.columns(2)
+    c[0].download_button("Download sheet (PDF)", cached_sheet_pdf(paper), file_name=f"packout_calibration_sheet_{paper}.pdf",
+                         mime="application/pdf", type="primary", key="dl_sheet", on_click="ignore", use_container_width=True)
+    c[1].download_button("Download sheet (PNG image)", cached_sheet_png(paper), file_name=f"packout_calibration_sheet_{paper}.png",
+                         mime="image/png", key="dl_sheet_png", on_click="ignore", use_container_width=True)
+    st.caption("Print at 100% (Actual size, not fit-to-page). The square border should measure 200 mm; "
+               "if it does not, enter the measured size below. If the PDF will not open on your device, use the PNG - "
+               "any image viewer can print it at real size.")
+    with st.expander("Preview the sheet"):
+        st.image(cached_sheet_png(paper), use_container_width=True)
 
     # ---- step 2: photo
     st.markdown('<span class="pk-step">2</span> **Upload a photo**', unsafe_allow_html=True)
@@ -465,9 +477,9 @@ with tab_scan:
                 st.markdown(f"**Generated block** · {p['cells'][0]} × {p['cells'][1]} cells · {p['height']:.1f} mm tall")
                 st.plotly_chart(mesh_figure(p["v"], p["f"], "#C8C8C8", 420), use_container_width=True)
                 c = st.columns(3)
-                c[0].download_button("Download STL", p["stl"], file_name=f"{p['name']}.stl", mime="model/stl", key="dl_scan_stl")
-                c[1].download_button("Download profile SVG", p["svg"], file_name=f"{p['name']}.svg", mime="image/svg+xml", key="dl_scan_svg")
-                c[2].download_button("Download profile DXF", p["dxf"], file_name=f"{p['name']}.dxf", mime="application/dxf", key="dl_scan_dxf")
+                c[0].download_button("Download STL", p["stl"], file_name=f"{p['name']}.stl", mime="model/stl", key="dl_scan_stl", on_click="ignore")
+                c[1].download_button("Download profile SVG", p["svg"], file_name=f"{p['name']}.svg", mime="image/svg+xml", key="dl_scan_svg", on_click="ignore")
+                c[2].download_button("Download profile DXF", p["dxf"], file_name=f"{p['name']}.dxf", mime="application/dxf", key="dl_scan_dxf", on_click="ignore")
 
     if ss.scan_items:
         st.subheader("Scanned blocks in this project")
@@ -591,5 +603,5 @@ with tab_out:
             ss.zip[fmt] = org.export_zip(parts, fmt)
     if fmt in ss.zip:
         st.download_button(f"Download packout_inserts_{fmt}.zip", ss.zip[fmt], file_name=f"packout_inserts_{fmt}.zip",
-                           mime="application/zip", type="primary")
+                           mime="application/zip", type="primary", on_click="ignore")
         st.caption("The zip's README.txt records the layout as of when it was prepared; prepare it again after changing pins.")

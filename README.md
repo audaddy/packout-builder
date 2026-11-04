@@ -8,7 +8,7 @@ Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organize
 
 * `src/phone_db.py` – phone presets (Galaxy S23 / S23+ / S23 Ultra) + `register_phone()` / JSON loading (`assets/phones_custom.json`).
 * `src/packout_db.py`, `src/assets/packout_images.py` – case specs and offline SVG thumbnails.
-* `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml).
+* `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml). Font is Helvetica Neue (Milwaukee's site font; system font on macOS/iOS, Helvetica/Arial elsewhere).
 * `src/scanner.py` – photo scanner: calibration-sheet PDF, ArUco homography, silhouette extraction, shapely smoothing / clearance / finger scoops, SVG and DXF profile export.
 * `src/geometry.py` – CadQuery builders: phone slot, STL insert, scanned-contour block, USB-C hub, baseplate tile, dovetail key.
 * `cad_engine.py` – `PackoutOrganizer`: tiling to the printer bed, layout, validation, STL/STEP zip export.
@@ -21,7 +21,7 @@ STL tolerance offset is a miter-compensated vertex offset (approximate on very s
 
 ## Photo tool scanner
 
-1. In the **📷 Photo Tool Scanner** tab, download the calibration sheet (A4 or Letter) and print it at 100%. Check the 200 mm border and the 100 mm scale bar with a ruler; if they are off, enter the measured border size under *Scan settings*.
+1. In the **📷 Photo Tool Scanner** tab, download the calibration sheet (A4 or Letter, PDF or PNG) and print it at 100%. Check the 200 mm border and the 100 mm scale bar with a ruler; if they are off, enter the measured border size under *Scan settings*.
 2. Lay the item flat on the sheet and photograph it from above (tilt is fine). All four corner markers must be visible, the lighting should be even, and the item must contrast with the white paper.
 3. Check the red edge overlay, set depth / clearance / grid, preview the block, then **Add to project**. The flat profile can be downloaded as SVG or DXF, and is also written to `profiles/` in the export zip.
 

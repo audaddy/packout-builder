@@ -8,11 +8,15 @@ Custom if it differs.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .assets import packout_images
 
+PHOTO_DIR = Path(__file__).resolve().parent.parent / "assets" / "cases"
 IN = 25.4
 GRID = 42.0
 CUSTOM_KEY = "custom"
@@ -52,6 +56,7 @@ _CASE_LIST = [
     CaseSpec("8430", "48-22-8430", "Organizer", (18.0, 12.0, 3.9)),
     CaseSpec("8431", "48-22-8431", "Low-Profile Organizer", (18.0, 12.0, 1.8)),
     CaseSpec("8432", "48-22-8432", "Deep Organizer", (18.0, 12.0, 5.5), estimated=True),
+    CaseSpec("8424", "48-22-8424", "Tool Box", (19.7, 13.2, 4.5)),
 ]
 CASES: Dict[str, CaseSpec] = {c.key: c for c in _CASE_LIST}
 
@@ -77,6 +82,22 @@ def footprint(interior_mm: Tuple[float, float, float], pitch: float = GRID) -> D
     return {"cells_x": cx, "cells_y": cy, "used_x": used[0], "used_y": used[1],
             "leftover_x": interior_mm[0] - used[0], "leftover_y": interior_mm[1] - used[1],
             "usable_pct": 100.0 * used[0] * used[1] / total if total else 0.0}
+
+
+def photo_path(case: Optional[CaseSpec]) -> Optional[Path]:
+    """Product photo for a case (``assets/cases/<key>.webp``) or ``None``."""
+    if case is None:
+        return None
+    p = PHOTO_DIR / f"{case.key}.webp"
+    return p if p.is_file() else None
+
+
+@lru_cache(maxsize=None)
+def photo_data_uri(key: str) -> Optional[str]:
+    """Base64 data URI of a case's photo for inline <img> use, ``None`` if missing."""
+    case = CASES.get(key)
+    p = photo_path(case)
+    return None if p is None else "data:image/webp;base64," + base64.b64encode(p.read_bytes()).decode()
 
 
 def thumbnail_svg(case: Optional[CaseSpec], selected: bool = False) -> str:

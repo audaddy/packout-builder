@@ -52,6 +52,30 @@ def test_calibration_pdf_rejects_unknown_paper():
         sc.calibration_sheet_pdf("A0")
 
 
+@pytest.mark.parametrize("paper", ["A4", "Letter"])
+def test_calibration_png_is_a_real_size_page_with_detectable_markers(paper):
+    from PIL import Image
+    data = sc.calibration_sheet_png(paper)
+    im = Image.open(io.BytesIO(data))
+    assert im.format == "PNG"
+    dpi = im.info["dpi"][0]
+    assert abs(dpi - 300) < 0.5                                        # prints at real size
+    w_mm, h_mm = (v / dpi * 25.4 for v in im.size)
+    assert abs(w_mm - sc.PAPER_SIZES[paper][0]) < 0.5 and abs(h_mm - sc.PAPER_SIZES[paper][1]) < 0.5
+    found = sc.detect_markers(sc.decode_image(data))
+    assert sorted(found) == [0, 1, 2, 3]
+    # 200 mm border: marker 0 to marker 1 corner distance matches the layout at 300 dpi
+    ppm = dpi / 25.4
+    d = np.linalg.norm(found[1][0] - found[0][0]) / ppm
+    expected = np.linalg.norm(sc.marker_corners_mm(1)[0] - sc.marker_corners_mm(0)[0])
+    assert abs(d - expected) < 0.2
+
+
+def test_calibration_png_rejects_unknown_paper():
+    with pytest.raises(ValueError):
+        sc.calibration_sheet_png("A0")
+
+
 def test_pdf_workspace_fits_on_both_papers():
     for w, h in sc.PAPER_SIZES.values():
         assert w >= sc.WORKSPACE_MM and h >= sc.WORKSPACE_MM + 60     # room for instructions/scale bar

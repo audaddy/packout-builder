@@ -40,7 +40,7 @@ def test_phone_validation():
 
 def test_case_db():
     labels = pk.case_labels()
-    assert len(labels) == 5 and all("#48-22-" in l for l in labels)
+    assert len(labels) == 6 and all("#48-22-" in l for l in labels)
     c = pk.get_case("48-22-8435")
     assert c is pk.get_case("8435") is pk.get_case(c.label)
     assert c.interior_mm == pytest.approx((203.2, 304.8, 99.06))
@@ -64,3 +64,24 @@ def test_thumbnails_are_valid_svg(case):
     svg = pk.thumbnail_svg(case, selected=True)
     assert ET.fromstring(svg).tag.endswith("svg")
     assert img.svg_data_uri(svg).startswith("data:image/svg+xml;base64,")
+
+
+def test_tool_box_8424_spec():
+    c = pk.get_case("48-22-8424")
+    assert c.name == "Tool Box" and c.interior_in == (19.7, 13.2, 4.5) and not c.estimated
+    assert c.interior_mm == pytest.approx((500.38, 335.28, 114.3))
+
+
+@pytest.mark.parametrize("case", list(pk.CASES.values()), ids=lambda c: c.key)
+def test_every_case_has_a_small_valid_photo(case):
+    from PIL import Image
+    p = pk.photo_path(case)
+    assert p is not None and p.stat().st_size < 150_000
+    with Image.open(p) as im:
+        im.load()
+        assert im.format == "WEBP" and max(im.size) <= 700
+    assert pk.photo_data_uri(case.key).startswith("data:image/webp;base64,")
+
+
+def test_photo_helpers_handle_missing():
+    assert pk.photo_path(None) is None and pk.photo_data_uri("custom") is None

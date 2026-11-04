@@ -179,6 +179,44 @@ def render_calibration_image(px_per_mm: float = 4.0, margin_mm: float = 15.0) ->
     return img
 
 
+def calibration_sheet_png(paper: str = "A4", dpi: int = 300) -> bytes:
+    """The same sheet as a full-page PNG with its print size (``dpi``) embedded.
+
+    Fallback for devices/browsers that cannot open the PDF: any image viewer or
+    print dialog can print it at real size (200 mm border) because the file
+    carries a physical resolution.  Use ``Actual size`` / ``100%`` when printing."""
+    if paper not in PAPER_SIZES:
+        raise ValueError(f"paper must be one of {list(PAPER_SIZES)}")
+    from PIL import Image
+
+    ppm = dpi / 25.4
+    pw, ph = (int(round(v * ppm)) for v in PAPER_SIZES[paper])
+    page = np.full((ph, pw, 3), 255, np.uint8)
+    ws = render_calibration_image(px_per_mm=ppm, margin_mm=0.0)
+    n = ws.shape[0]
+    ox, oy = (pw - n) // 2, (ph - n) // 2
+    page[oy:oy + n, ox:ox + n] = ws
+
+    def mm_px(v: float) -> int:
+        return int(round(v * ppm))
+
+    font, k = cv2.FONT_HERSHEY_SIMPLEX, dpi / 300.0
+    black = (0, 0, 0)
+    cv2.putText(page, "Packout tool scanner - calibration sheet", (ox, oy - mm_px(18)), font, 1.5 * k, black, max(1, int(3 * k)), cv2.LINE_AA)
+    cv2.putText(page, "Print at 100% / Actual size (NOT fit to page). The square border must measure 200 mm.",
+                (ox, oy - mm_px(8)), font, 0.8 * k, black, max(1, int(2 * k)), cv2.LINE_AA)
+    bar_y = oy + n + mm_px(12)
+    thick = max(2, int(0.8 * ppm))
+    cv2.line(page, (ox, bar_y), (ox + mm_px(100), bar_y), black, thick)
+    for t in range(0, 101, 10):
+        cv2.line(page, (ox + mm_px(t), bar_y - mm_px(1.2)), (ox + mm_px(t), bar_y + mm_px(1.2)), black, max(1, thick // 2))
+    cv2.putText(page, "Scale check: this bar must measure 100 mm. If not, enter the measured border size in the app.",
+                (ox, bar_y + mm_px(8)), font, 0.7 * k, black, max(1, int(2 * k)), cv2.LINE_AA)
+    buf = io.BytesIO()
+    Image.fromarray(page[:, :, ::-1]).save(buf, format="PNG", dpi=(dpi, dpi))
+    return buf.getvalue()
+
+
 # --------------------------------------------------------------------------- #
 # Vision pipeline
 # --------------------------------------------------------------------------- #
