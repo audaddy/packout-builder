@@ -6,6 +6,8 @@ Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organize
     streamlit run app.py          # web UI
     python -m pytest              # unit tests
 
+* `src/printers.py` – printer presets: Bambu Lab P2S, Prusa XL, Prusa CORE One L, Prusa HT90 (round Ø300 bed; tiles must fit the circle diagonally) or Custom.
+* `src/cnc.py` – Shapeoko 4 XL G-code for scanned-tool pockets (see below).
 * `src/phone_db.py` – phone presets (Galaxy S23 / S23+ / S23 Ultra) + `register_phone()` / JSON loading (`assets/phones_custom.json`).
 * `src/packout_db.py`, `src/assets/packout_images.py` – case specs and offline SVG thumbnails.
 * `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml). Font is Helvetica Neue (Milwaukee's site font; system font on macOS/iOS, Helvetica/Arial elsewhere).
@@ -26,3 +28,16 @@ STL tolerance offset is a miter-compensated vertex offset (approximate on very s
 3. Check the red edge overlay, set depth / clearance / grid, preview the block, then **Add to project**. The flat profile can be downloaded as SVG or DXF, and is also written to `profiles/` in the export zip.
 
 Accuracy on synthetic photos with known ground truth: outline area within about 1%, marker fit error about 0.1 mm. Hard shadows are detected as part of the item, so use diffuse light. Needs OpenCV 4.x (`opencv-python>=4.8,<5`).
+
+## CNC (Shapeoko 4 XL)
+
+After **Preview block** in the scanner tab, open *CNC program (Shapeoko 4 XL)*: pick material, bit and stock thickness,
+check the toolpath preview and download the `.nc` file.
+
+* Mills the scanned outline as a flat-bottom pocket (islands stay standing) in Z levels with concentric passes, a 3 degree ramped
+  entry and climb milling; optionally through-cuts the block out of the stock with holding tabs.
+* Work zero in Carbide Motion: X0 Y0 = lower-left corner of the stock, Z0 = top of the stock.
+* Plain G0/G1, mm, absolute. `M6 T1` can be switched off for senders that reject it.
+* Feeds, speeds and stepdown are conservative starting points for a 1/4 in bit, scaled for smaller bits. Test on scrap first.
+* The bit cannot reach narrow gaps and sharp inside corners; the panel reports how much of the outline that is.
+* Machine limits come from Carbide 3D: 33 x 17.5 x 4 in cutting area.

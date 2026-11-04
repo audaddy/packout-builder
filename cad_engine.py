@@ -77,6 +77,7 @@ class PackoutOrganizer:
         model: Optional[str] = next(iter(PACKOUT_MODELS)),
         interior: Optional[Sequence[float]] = None,
         bed: Sequence[float] = (200.0, 200.0, 200.0),
+        bed_round: bool = False,
     ):
         if interior is not None:
             self.interior = tuple(float(v) for v in interior)
@@ -87,6 +88,9 @@ class PackoutOrganizer:
             self.interior = PACKOUT_MODELS[model]["interior"]
             self.model = model
         self.bed = tuple(float(v) for v in bed)
+        self.bed_round = bool(bed_round)
+        if self.bed_round:                       # round plate: bed[0] is the diameter
+            self.bed = (self.bed[0], self.bed[0], self.bed[2])
         if min(self.interior) <= 0 or min(self.bed) <= 0:
             raise ValueError("dimensions must be positive")
         self.cells_x = int(self.interior[0] // GRID)
@@ -100,9 +104,32 @@ class PackoutOrganizer:
     def leftover(self) -> Tuple[float, float]:
         return (self.interior[0] - self.cells_x * GRID, self.interior[1] - self.cells_y * GRID)
 
+    def footprint_fits(self, w: float, h: float) -> bool:
+        """Does a w x h mm part fit on the plate (rotating it 90 deg if that helps)?"""
+        if self.bed_round:
+            return math.hypot(w, h) <= self.bed[0] + 1e-6
+        return (w <= self.bed[0] + 1e-6 and h <= self.bed[1] + 1e-6) or \
+               (h <= self.bed[0] + 1e-6 and w <= self.bed[1] + 1e-6)
+
     @property
     def max_cells_per_tile(self) -> Tuple[int, int]:
-        return (int(self.bed[0] // GRID), int(self.bed[1] // GRID))
+        if not self.bed_round:
+            return (int(self.bed[0] // GRID), int(self.bed[1] // GRID))
+        # round plate: a tile's diagonal must fit in the circle, so pick the (x, y) limits
+        # that give the fewest tiles, then the fewest dovetail seams
+        top = int(self.bed[0] // GRID)
+        best = None
+        for mx in range(1, top + 1):
+            for my in range(1, top + 1):
+                if math.hypot(mx * GRID, my * GRID) > self.bed[0] + 1e-6:
+                    continue
+                cols, rows = len(split_cells(self.cells_x, mx)), len(split_cells(self.cells_y, my))
+                score = (cols * rows, (cols - 1) * self.cells_y + (rows - 1) * self.cells_x, -(mx * my))
+                if best is None or score < best[0]:
+                    best = (score, (mx, my))
+        if best is None:
+            raise ValueError("printer bed is smaller than one 42 mm cell")
+        return best[1]
 
     def plan_tiles(self) -> List[Tile]:
         mx, my = self.max_cells_per_tile
@@ -150,10 +177,8 @@ class PackoutOrganizer:
     # ----------------------------------------------------------------- items
     def _register(self, name: str, kind: str, built, height: float, count: int) -> List[Item]:
         solid, nx, ny = built
-        if nx * GRID > self.bed[0] + 1e-6 or ny * GRID > self.bed[1] + 1e-6:
-            # try rotating the part on the bed
-            if ny * GRID > self.bed[0] + 1e-6 or nx * GRID > self.bed[1] + 1e-6:
-                raise ValueError(f"{name}: {nx}x{ny} cells ({nx*GRID:.0f}x{ny*GRID:.0f} mm) exceeds the printer bed")
+        if not self.footprint_fits(nx * GRID, ny * GRID):
+            raise ValueError(f"{name}: {nx}x{ny} cells ({nx*GRID:.0f}x{ny*GRID:.0f} mm) exceeds the printer bed")
         if height > self.bed[2] + 1e-6:
             raise ValueError(f"{name}: height {height:.1f} mm exceeds bed Z {self.bed[2]:.0f} mm")
         added = []
@@ -289,9 +314,7 @@ class PackoutOrganizer:
 
     def fits_bed(self, wp: cq.Workplane) -> bool:
         x0, y0, z0, x1, y1, z1 = geo.exact_bbox(wp)
-        dims = sorted([x1 - x0, y1 - y0])
-        return dims[0] <= min(self.bed[:2]) + 1e-6 and dims[1] <= max(self.bed[:2]) + 1e-6 \
-            and (z1 - z0) <= self.bed[2] + 1e-6
+        return self.footprint_fits(x1 - x0, y1 - y0) and (z1 - z0) <= self.bed[2] + 1e-6
 
     def export_zip(self, parts: Dict[str, cq.Workplane], fmt: str = "stl") -> bytes:
         """Zip of printable files. fmt: 'stl', 'step' or 'both'.  Scanned items
@@ -324,7 +347,8 @@ class PackoutOrganizer:
             f"Packout insert plan -- {self.model}",
             f"Interior {self.interior[0]:.0f} x {self.interior[1]:.0f} x {self.interior[2]:.0f} mm",
             f"Grid {self.cells_x} x {self.cells_y} cells of {GRID:.0f} mm (unused: {lx:.1f} x {ly:.1f} mm)",
-            f"Print bed {self.bed[0]:.0f} x {self.bed[1]:.0f} x {self.bed[2]:.0f} mm",
+            (f"Print bed \u00D8{self.bed[0]:.0f} x {self.bed[2]:.0f} mm (round)" if self.bed_round
+             else f"Print bed {self.bed[0]:.0f} x {self.bed[1]:.0f} x {self.bed[2]:.0f} mm"),
             f"Baseplate tiles: {len(self.plan_tiles())}, dovetail keys: {self.seam_key_count()}",
             "", "Placement (cell x, y from the front-left interior corner):",
         ]

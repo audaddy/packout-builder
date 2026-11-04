@@ -4,3 +4,9 @@ __pycache__/
 .playwright-mcp/
 outputs/*
 !outputs/.gitkeep
+
+static/
+
+test_photos/
+
+.DS_Store

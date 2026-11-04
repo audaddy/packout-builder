@@ -7,6 +7,7 @@ import hashlib
 import html
 import os
 import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -18,7 +19,9 @@ import streamlit as st
 from cad_engine import PackoutOrganizer
 from src import geometry as geo
 from src import packout_db as pk
+from src import cnc
 from src import phone_db as ph
+from src import printers as pr
 from src import scanner as sc
 from src.geometry import GRID
 from src.theme import RED, apply_theme, style_figure
@@ -34,27 +37,29 @@ class _TabAbort(Exception):
 # --------------------------------------------------------------------------- state
 ss.setdefault("tmpdir", tempfile.mkdtemp(prefix="packout_"))
 ss.setdefault("case_key", "8435")
+_p0 = pr.PRINTERS[pr.DEFAULT_PRINTER]
 for k, v in (("custom_x", 203.0), ("custom_y", 305.0), ("custom_z", 95.0),
-             ("bed_x", 220.0), ("bed_y", 220.0), ("bed_z", 250.0)):
+             ("bed_x", _p0.x), ("bed_y", _p0.y), ("bed_z", _p0.z), ("bed_round", _p0.round_bed),
+             ("bed_preset", _p0.label)):
     ss.setdefault(k, v)
 ss.setdefault("stl_items", [])
 ss.setdefault("stl_preview", None)
 ss.setdefault("scan_items", [])
 ss.setdefault("scan_preview", None)
 
-BED_PRESETS = {
-    "Custom": None,
-    "Ender 3 / generic 220 (220 x 220 x 250)": (220.0, 220.0, 250.0),
-    "Prusa MK4 (250 x 210 x 220)": (250.0, 210.0, 220.0),
-    "Bambu X1 / P1 (256 x 256 x 256)": (256.0, 256.0, 256.0),
-    "Bambu A1 mini (180 x 180 x 180)": (180.0, 180.0, 180.0),
-}
+BED_PRESETS = {p.label: p for p in pr.PRINTERS.values()}
+BED_PRESETS[pr.CUSTOM_LABEL] = None
+
+
+def on_round_toggle():
+    if not ss.bed_round:                       # Bed Y is not drawn for a round plate; give it a sane value back
+        ss.bed_y = ss.bed_x
 
 
 def on_bed_preset():
-    v = BED_PRESETS[ss.bed_preset]
-    if v:
-        ss.bed_x, ss.bed_y, ss.bed_z = v
+    p = BED_PRESETS[ss.bed_preset]
+    if p:
+        ss.bed_x, ss.bed_y, ss.bed_z, ss.bed_round = p.x, p.y, p.z, p.round_bed
 
 
 def current_interior():
@@ -99,6 +104,18 @@ def cached_sheet_pdf(paper: str) -> bytes:
 @st.cache_data(show_spinner=False)
 def cached_sheet_png(paper: str) -> bytes:
     return sc.calibration_sheet_png(paper)
+
+
+@st.cache_resource(show_spinner=False)
+def publish_static_sheets() -> bool:
+    """Write the sheets to ./static so they can be opened straight in a browser tab
+    (served at /app/static/..., needs ``enableStaticServing``) without a download."""
+    out = Path(__file__).resolve().parent / "static"
+    out.mkdir(exist_ok=True)
+    for paper in sc.PAPER_SIZES:
+        (out / f"packout_calibration_sheet_{paper}.pdf").write_bytes(sc.calibration_sheet_pdf(paper))
+        (out / f"packout_calibration_sheet_{paper}.png").write_bytes(sc.calibration_sheet_png(paper))
+    return True
 
 
 @st.cache_data(show_spinner=False)
@@ -185,10 +202,15 @@ with tab_case:
 
     st.subheader("Printer bed")
     st.selectbox("Preset", list(BED_PRESETS), key="bed_preset", on_change=on_bed_preset)
+    st.checkbox("Round bed (X is the diameter)", key="bed_round", on_change=on_round_toggle,
+                help="Circular build plate such as the Prusa HT90. Tiles must then fit inside the circle diagonally.")
     c = st.columns(3)
-    c[0].number_input("Bed X (mm)", 50.0, 1000.0, step=5.0, key="bed_x")
-    c[1].number_input("Bed Y (mm)", 50.0, 1000.0, step=5.0, key="bed_y")
-    c[2].number_input("Bed Z (mm)", 20.0, 1000.0, step=5.0, key="bed_z")
+    c[0].number_input("Bed diameter (mm)" if ss.bed_round else "Bed X (mm)", 50.0, 1000.0, step=5.0, key="bed_x")
+    if ss.bed_round:
+        c[1].number_input("Bed Z (mm)", 20.0, 1000.0, step=5.0, key="bed_z")
+    else:
+        c[1].number_input("Bed Y (mm)", 50.0, 1000.0, step=5.0, key="bed_y")
+        c[2].number_input("Bed Z (mm)", 20.0, 1000.0, step=5.0, key="bed_z")
 
 # =========================================================================== TAB 2
 with tab_phone:
@@ -330,6 +352,75 @@ with tab_stl, contextlib.suppress(_TabAbort):
                 ss.stl_items.pop(i)
                 st.rerun()
 
+def cnc_panel(p: dict) -> None:
+    """Shapeoko 4 XL G-code for the previewed scanned block."""
+    m = cnc.MACHINES[cnc.DEFAULT_MACHINE]
+    st.caption(f"Mills the pocket in stock (MDF, plywood, plastic, foam...) and optionally cuts the block out. "
+               f"{m.label}. Work zero: lower-left corner of the stock, Z0 on the stock top.")
+    c = st.columns(3)
+    material = c[0].selectbox("Material", list(cnc.MATERIALS), key="cnc_material")
+    tool_label = c[1].selectbox("Bit (flat endmill)", list(cnc.TOOL_SIZES), index=2, key="cnc_tool")
+    tool = cnc.TOOL_SIZES[tool_label]
+    stock_t = c[2].number_input("Stock thickness (mm)", 5.0, float(m.z), max(25.4, float(np.ceil(p["depth"] + 3))),
+                                step=0.1, key="cnc_stock")
+    c = st.columns(3)
+    depth = c[0].number_input("Pocket depth (mm)", 1.0, float(m.z), float(p["depth"]), step=0.5, key="cnc_depth")
+    cut_out = c[1].checkbox("Also cut the block out (with tabs)", value=True, key="cnc_cutout")
+    tool_change = c[2].checkbox("Emit M6 tool change (Carbide Motion)", value=True, key="cnc_m6",
+                                help="Carbide Motion pauses so you can fit the bit. Untick for senders that reject M6, e.g. plain GRBL.")
+    d = cnc.material_defaults(material, tool)
+    tag = f"{material}_{tool}"                                   # new defaults whenever material or bit changes
+    with st.expander("Feeds, speeds and tabs"):
+        c = st.columns(4)
+        feed = c[0].number_input("Feed (mm/min)", 100.0, 6000.0, d["feed"], 50.0, key=f"cnc_feed_{tag}")
+        plunge = c[1].number_input("Plunge / ramp (mm/min)", 50.0, 3000.0, d["plunge"], 50.0, key=f"cnc_plunge_{tag}")
+        stepdown = c[2].number_input("Stepdown (mm)", 0.2, 25.0, d["stepdown"], 0.1, key=f"cnc_sd_{tag}")
+        rpm = c[3].number_input("Spindle (rpm)", 1000.0, 30000.0, float(d["rpm"]), 500.0, key=f"cnc_rpm_{tag}")
+        c = st.columns(4)
+        stepover = c[0].number_input("Stepover (% of bit)", 10.0, 100.0, 40.0, 5.0, key="cnc_stepover")
+        tabs = c[1].number_input("Tabs", 0, 12, 4, key="cnc_tabs")
+        tab_h = c[2].number_input("Tab height (mm)", 0.5, 10.0, 2.5, 0.5, key="cnc_tabh")
+        margin = c[3].number_input("Stock margin (mm)", 5.0, 100.0, max(15.0, tool + 2.0), 1.0, key="cnc_margin")
+        flute = st.number_input("Bit flute length (mm)", 3.0, 80.0, 19.0, 1.0, key="cnc_flute",
+                                help="Only used to warn when the pocket is deeper than the bit can cut.")
+    job = cnc.CncJob(name=p["name"], tool_diameter=tool, stock_thickness=float(stock_t), pocket_depth=float(depth),
+                     material=material, feed=feed, plunge=plunge, stepdown=stepdown, rpm=rpm, stepover_pct=stepover,
+                     cut_out=bool(cut_out), margin=float(margin), tabs=int(tabs), tab_height=float(tab_h),
+                     flute_length=float(flute), tool_change=bool(tool_change))
+    try:
+        res = cnc.generate_gcode(p["profile"], p["size"], job)
+    except cnc.CncError as e:
+        st.error(str(e))
+        return
+    mm = st.columns(4)
+    mm[0].metric("Stock to cut", f"{res.stock[0]:.0f} × {res.stock[1]:.0f} mm", help=f"Thickness {res.stock[2]:.1f} mm")
+    mm[1].metric("Est. run time", f"{res.minutes:.0f} min")
+    mm[2].metric("Z levels", f"{res.layers}")
+    mm[3].metric("Not reachable", f"{res.uncut_pct:.1f}%", help="Narrow gaps and sharp inside corners the bit cannot enter.")
+    for w in res.warnings:
+        st.warning(w)
+    fig = go.Figure()
+    sx, sy, _ = res.stock
+    fig.add_shape(type="rect", x0=0, y0=0, x1=sx, y1=sy, line=dict(color="#777", width=1.5), fillcolor="rgba(255,255,255,0.04)")
+    bx, by = res.block_origin
+    fig.add_shape(type="rect", x0=bx, y0=by, x1=bx + p["size"][0], y1=by + p["size"][1],
+                  line=dict(color="#B0B0B0", width=1, dash="dot"))
+    for k, path in enumerate(res.pocket_paths):
+        fig.add_trace(go.Scatter(x=path[:, 0], y=path[:, 1], mode="lines", line=dict(color=RED, width=1.3),
+                                 name="Pocket passes", legendgroup="p", showlegend=(k == 0), hoverinfo="skip"))
+    for path in res.cutout_paths:
+        fig.add_trace(go.Scatter(x=path[:, 0], y=path[:, 1], mode="lines", line=dict(color="#FFFFFF", width=1.5),
+                                 name="Cut-out (bit centre)", hoverinfo="skip"))
+    fig.update_xaxes(range=[-5, sx + 5], title="mm", showgrid=False, constrain="domain")
+    fig.update_yaxes(range=[-5, sy + 5], scaleanchor="x", title="mm", showgrid=False, constrain="domain")
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.15, x=0))
+    st.plotly_chart(style_figure(fig, 420), use_container_width=True)
+    st.download_button("Download G-code (.nc)", res.gcode, file_name=f"{p['name']}_shapeoko4xl.nc",
+                       mime="text/plain", type="primary", key="dl_cnc", on_click="ignore")
+    st.caption("In Carbide Motion: zero X/Y at the lower-left corner of the stock and Z on its top surface. "
+               "Feeds are starting points for a 1/4 in bit; test on scrap first.")
+
+
 # =========================================================================== TAB: PHOTO SCANNER
 with tab_scan:
     st.subheader("Photo tool scanner")
@@ -340,14 +431,19 @@ with tab_scan:
     paper = st.radio("Paper", ["A4", "Letter"], horizontal=True, key="scan_paper")
     c = st.columns(2)
     c[0].download_button("Download sheet (PDF)", cached_sheet_pdf(paper), file_name=f"packout_calibration_sheet_{paper}.pdf",
-                         mime="application/pdf", type="primary", key="dl_sheet", on_click="ignore", use_container_width=True)
+                         mime="application/pdf", type="primary", key="dl_sheet", on_click="ignore", width="stretch")
     c[1].download_button("Download sheet (PNG image)", cached_sheet_png(paper), file_name=f"packout_calibration_sheet_{paper}.png",
-                         mime="image/png", key="dl_sheet_png", on_click="ignore", use_container_width=True)
+                         mime="image/png", key="dl_sheet_png", on_click="ignore", width="stretch")
+    publish_static_sheets()
+    c = st.columns(2)
+    c[0].link_button("Open PDF in a new tab (print from there)", f"app/static/packout_calibration_sheet_{paper}.pdf",
+                     width="stretch")
+    c[1].link_button("Open PNG in a new tab", f"app/static/packout_calibration_sheet_{paper}.png", width="stretch")
     st.caption("Print at 100% (Actual size, not fit-to-page). The square border should measure 200 mm; "
-               "if it does not, enter the measured size below. If the PDF will not open on your device, use the PNG - "
-               "any image viewer can print it at real size.")
+               "if it does not, enter the measured size below. If a downloaded file will not open, use the "
+               "\"Open in a new tab\" buttons and print from the browser.")
     with st.expander("Preview the sheet"):
-        st.image(cached_sheet_png(paper), use_container_width=True)
+        st.image(cached_sheet_png(paper), width="stretch")
 
     # ---- step 2: photo
     st.markdown('<span class="pk-step">2</span> **Upload a photo**', unsafe_allow_html=True)
@@ -456,7 +552,8 @@ with tab_scan:
                         stl_bytes = PackoutOrganizer.to_mesh(blk, 0.01, 0.1).export(file_type="stl")
                     ss.scan_preview = dict(v=mesh.vertices, f=mesh.faces, cells=(nx, ny), height=binfo["height_mm"], stl=stl_bytes,
                                            svg=sc.polygon_to_svg(binfo["profile"]), dxf=sc.polygon_to_dxf(binfo["profile"]),
-                                           name=name or "scanned_tool")
+                                           name=name or "scanned_tool", profile=binfo["profile"],
+                                           size=(nx * GRID, ny * GRID), depth=float(depth))
                 except ValueError as e:
                     ss.scan_preview = None
                     st.error(str(e))
@@ -481,6 +578,9 @@ with tab_scan:
                 c[1].download_button("Download profile SVG", p["svg"], file_name=f"{p['name']}.svg", mime="image/svg+xml", key="dl_scan_svg", on_click="ignore")
                 c[2].download_button("Download profile DXF", p["dxf"], file_name=f"{p['name']}.dxf", mime="application/dxf", key="dl_scan_dxf", on_click="ignore")
 
+                with st.expander("CNC program (Shapeoko 4 XL)"):
+                    cnc_panel(p)
+
     if ss.scan_items:
         st.subheader("Scanned blocks in this project")
         for i, it in enumerate(list(ss.scan_items)):
@@ -495,10 +595,10 @@ with tab_scan:
 with tab_out:
     def build():
         ix, iy, iz = current_interior()
-        bed = (ss.bed_x, ss.bed_y, ss.bed_z)
+        bed = (ss.bed_x, ss.bed_x if ss.bed_round else ss.get('bed_y', ss.bed_x), ss.bed_z)
         custom = ss.case_key == pk.CUSTOM_KEY
         org = PackoutOrganizer(None if custom else pk.CASES[ss.case_key].label,
-                               interior=(ix, iy, iz) if custom else None, bed=bed)
+                               interior=(ix, iy, iz) if custom else None, bed=bed, bed_round=bool(ss.bed_round))
         if n_phones:
             org.add_phone_slots(int(n_phones), phone=spec, clearance=clearance, angle=float(angle),
                                 height_mm=float(phone_h), finger_scoops=scoops)
