@@ -2,6 +2,20 @@
 
 Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organizers (CadQuery).
 
+## Download and run it on your computer (free)
+
+1. **[Download the ZIP](https://github.com/audaddy/packout-builder/archive/refs/heads/main.zip)** and unzip it (or `git clone https://github.com/audaddy/packout-builder.git`).
+2. You need **Python 3.9 - 3.12**; if you do not have it, install Python 3.11 from <https://www.python.org/downloads/>.
+3. Start it:
+   * **Mac:** double-click `Start-Mac.command` (the first time: right-click it, choose **Open**, then **Open** again). Or run `bash start.sh` in Terminal.
+   * **Windows:** double-click `Start-Windows.bat`.
+   * **Linux:** run `bash start.sh`.
+4. Your browser opens the app at **[http://localhost:8501](http://localhost:8501)**. The very first launch downloads the dependencies (a few minutes); after that it starts in seconds. Close the window, or press Ctrl+C, to stop it.
+
+Everything runs on your own computer and only that computer can reach it; nothing is uploaded anywhere. To update, download the ZIP again (or `git pull`) and start it the same way. Source: <https://github.com/audaddy/packout-builder>
+
+## Install, run and test
+
     python -m pip install -r requirements.txt
     streamlit run app.py          # web UI
     python -m pytest              # unit tests

@@ -7,7 +7,7 @@ plotly>=5.18
 streamlit>=1.30
 fast-simplification>=0.1.9   # STL decimation (0.1.9 is the newest release that imports on Python 3.9)
 pytest
-opencv-python>=4.8,<5     # photo scanner (ArUco detection, homography); 5.x untested
+opencv-python-headless>=4.8,<5   # photo scanner (ArUco detection, homography); headless so it also installs on servers (no libGL); 5.x untested
 shapely>=2.0              # outline smoothing / clearance buffering
 reportlab>=4.0,<5         # printable calibration sheet (5.x needs Python 3.10+)
 ezdxf                     # DXF export of scanned profiles (also a cadquery dependency)
