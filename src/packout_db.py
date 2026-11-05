@@ -74,11 +74,15 @@ def get_case(ident: str) -> CaseSpec:
     raise KeyError(f"unknown Packout case {ident!r}; choose one of {case_labels()}")
 
 
-def footprint(interior_mm: Tuple[float, float, float], pitch: float = GRID) -> Dict[str, float]:
-    """Grid cells that fit in an interior and how much of the floor they use."""
-    cx, cy = int(interior_mm[0] // pitch), int(interior_mm[1] // pitch)
-    used = (cx * pitch, cy * pitch)
+def footprint(interior_mm: Tuple[float, float, float], pitch: float = GRID, half: bool = False) -> Dict[str, float]:
+    """Grid cells that fit in an interior and how much of the floor they use.
+
+    With ``half`` the floor is counted in half cells (e.g. 4.5 cells across a 203 mm interior)."""
+    step = pitch / 2 if half else pitch
+    nx, ny = int(interior_mm[0] // step), int(interior_mm[1] // step)
+    used = (nx * step, ny * step)
     total = interior_mm[0] * interior_mm[1]
+    cx, cy = (nx / 2, ny / 2) if half else (nx, ny)
     return {"cells_x": cx, "cells_y": cy, "used_x": used[0], "used_y": used[1],
             "leftover_x": interior_mm[0] - used[0], "leftover_y": interior_mm[1] - used[1],
             "usable_pct": 100.0 * used[0] * used[1] / total if total else 0.0}

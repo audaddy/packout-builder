@@ -94,3 +94,16 @@ def test_layout_flags_stale_project_and_unplaced_blocks():
     button(at, "Generate project").click().run()
     assert not any("changed since" in w.value for w in at.warning)
     assert "scanned_tool" in [s for s in at.selectbox if s.label == "Part"][0].options
+
+
+def test_clustered_stl_item_generates_and_shows_in_layout(puck_stl):
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    at.number_input(key="n_phones").set_value(0).run()
+    at.session_state["stl_items"] = [dict(
+        name="pucks", path=puck_stl, rot=(0, 0, 0), clearance=0.0, gx=1, gy=1, cable_side=False, cable_floor=False,
+        height=None, pocket="silhouette", on_base=True, base_t=3.0, copies=3, hug=True, use_watch=False,
+        w_d=47.0, w_t=14.4, gap=3.0)]
+    button(at, "Generate project").click().run()
+    assert not at.exception and not at.error
+    assert "pucks" in [s for s in at.selectbox if s.label == "Part"][0].options
+    assert [i.name for i in at.session_state["org"].items if i.name == "pucks"][0] == "pucks"

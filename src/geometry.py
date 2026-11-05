@@ -715,6 +715,57 @@ def create_stl_on_base(
     return (block, nx, ny, info) if return_info else (block, nx, ny)
 
 
+def create_stl_cluster_block(
+    stl_path: str,
+    plan,
+    base_thickness: float = 3.0,
+    margin: float = 3.0,
+    rotation_deg=(0, 0, 0),
+    max_faces: int = 8000,
+    return_info: bool = False,
+):
+    """Several copies of the STL (arranged by ``plan``, a :class:`src.cluster.ClusterPlan`) fused
+    onto one flat base that hugs the cluster outline.
+
+    The base has no Gridfinity feet: it is a ``base_thickness`` mm plate (chamfered underside),
+    so it sits flat on the case floor.  Local coordinates start at the lower-left corner of the
+    cluster (stands, installed watches and base), so the block can be placed like any other.
+
+    Returns ``(block, nx, ny)`` (cells reserved in the layout) or with ``return_info`` also an info dict.
+    """
+    from . import cluster as cl
+
+    if base_thickness < 1.0:
+        raise ValueError("base_thickness must be >= 1 mm")
+    rx, ry, rz = _check_rotation(rotation_deg)
+    solid, _ = load_stl_as_solid(stl_path, 0.0, max_faces=max_faces, rotation_deg=(rx, ry, (rz + plan.rz) % 360))
+    outline = cl.cluster_outline(plan, margin)
+    x0 = min(outline.bounds[0], plan.bbox[0])
+    y0 = min(outline.bounds[1], plan.bbox[1])
+    x1 = max(outline.bounds[2], plan.bbox[2])
+    y1 = max(outline.bounds[3], plan.bbox[3])
+    from shapely import affinity
+    outline = affinity.translate(outline, -x0, -y0)
+    sink = 0.3
+    base = cq.Workplane("XY")
+    for ring in [outline.exterior] + list(outline.interiors):
+        base = base.polyline(_ring_points(ring.coords)).close()
+    base = base.extrude(base_thickness)
+    try:
+        base = base.faces("<Z").edges().chamfer(min(0.5, base_thickness / 3))
+    except Exception:                                    # pragma: no cover - geometry dependent
+        log.warning("base chamfer failed; skipping")
+    parts = [solid.translate(cq.Vector(ox - x0, oy - y0, base_thickness - sink)) for ox, oy in plan.offsets]
+    block = base.union(cq.Workplane("XY").add(cq.Compound.makeCompound(parts)), clean=True)
+    if not block.val().isValid():
+        raise ValueError("the objects could not be fused to the base (invalid solid)")
+    w, h = x1 - x0, y1 - y0
+    nx, ny = max(1, math.ceil(w / GRID - 1e-9)), max(1, math.ceil(h / GRID - 1e-9))
+    info = {"copies": len(plan.offsets), "size": (w, h), "rz": plan.rz, "height_mm": base_thickness - sink + plan.height,
+            "outline": outline, "base_area_cm2": outline.area / 100, "offsets": [(ox - x0, oy - y0) for ox, oy in plan.offsets]}
+    return (block, nx, ny, info) if return_info else (block, nx, ny)
+
+
 # --------------------------------------------------------------------------- #
 # Scanned contour (photo scanner) -> block
 # --------------------------------------------------------------------------- #

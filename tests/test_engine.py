@@ -1,4 +1,5 @@
 import io
+import math
 import zipfile
 
 import pytest
@@ -244,3 +245,44 @@ def test_phone_rack_lid_warning():
     o = PackoutOrganizer("Compact Organizer #48-22-8435")          # 99 mm interior; upright S23 is far taller
     o.add_phone_rack(2, phone="Samsung Galaxy S23", stance="portrait", angle=0)
     assert any("lid will not close" in w for w in o.layout())
+
+
+# ---- half-cell floor use (baseplate-free) ----------------------------------------
+def test_half_cell_grid_only_without_baseplates():
+    on = PackoutOrganizer("Compact Organizer #48-22-8435", interlock=True)         # 203 x 305 mm interior
+    off = PackoutOrganizer("Compact Organizer #48-22-8435")
+    assert on.grid_cells == (4.5, 7.0) and off.grid_cells == (4.0, 7.0)
+    assert on.leftover == pytest.approx((203.2 - 189.0, 304.8 - 294.0))
+    assert (off.cells_x, off.cells_y) == (4, 7)                                    # baseplate tiles stay whole cells
+
+
+def test_custom_shaped_block_reserves_half_cells_and_can_sit_on_a_half_cell(bar_stl):
+    o = PackoutOrganizer("Compact Organizer #48-22-8435", bed=(256, 256, 256), interlock=True)
+    cl_item = o.add_stl_cluster(bar_stl, 2, name="bars", use_watch=False)[0]
+    w, h = o.check_part(cl_item.solid)["size"][:2]
+    assert cl_item.ux * 21 >= w - 1e-6 and cl_item.uy * 21 >= h - 1e-6          # reserves at least its real footprint
+    assert cl_item.ux <= 2 * cl_item.nx and cl_item.uy <= 2 * cl_item.ny        # in half cells: never more than whole cells
+    grid_item = o.add_stl_on_base(bar_stl, name="plain")[0]
+    assert grid_item.ux == 2 * grid_item.nx and grid_item.sockets
+    cl_item.manual, cl_item.pos = True, (0.5, 0)
+    o.layout()
+    assert cl_item.pos == (0.5, 0) and grid_item.pos is not None
+    assert all(float(c).is_integer() for c in grid_item.pos)                       # socketed blocks stay on whole cells
+    assert "cells" in o.summary()
+
+
+def test_clips_only_where_sockets_line_up():
+    o = PackoutOrganizer("Compact Organizer #48-22-8435", interlock=True)
+    import trimesh, tempfile, os
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "b.stl")
+    trimesh.creation.box((30.0, 30.0, 10.0)).export(p)
+    a = o.add_stl_on_base(p, name="a")[0]
+    b = o.add_stl_on_base(p, name="b")[0]
+    a.manual, a.pos = True, (0, 0)
+    b.manual, b.pos = True, (a.nx, 0)
+    o.layout()
+    assert o.seam_key_count() == 1                      # aligned neighbours: one clip per shared cell edge
+    b.pos = (a.nx, 0.5)                                 # half a cell off: sockets do not line up
+    o.layout()
+    assert o.seam_key_count() == 0

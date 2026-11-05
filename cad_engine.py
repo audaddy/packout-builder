@@ -26,6 +26,7 @@ from src.phone_db import PhoneSpec, get_phone
 log = logging.getLogger(__name__)
 
 IN = 25.4
+HALF = GRID / 2          # layout granularity: half a cell (21 mm)
 
 # Interior dimensions come from src/packout_db.py (Milwaukee's published specs;
 # dividers/bins not accounted for).  Kept as a label -> dict map for callers.
@@ -60,6 +61,13 @@ class Item:
     manual: bool = False
     notes: List[str] = field(default_factory=list)   # shown as layout warnings
     profile: Optional[object] = None                 # shapely outline (scanned items) for SVG/DXF export
+    sockets: bool = True                             # has interlock sockets (grid blocks); False for custom-shaped bases
+    ux: int = 0                                      # footprint in half-cell layout units (0 = 2 x nx)
+    uy: int = 0
+
+    def __post_init__(self):
+        self.ux = self.ux or 2 * self.nx
+        self.uy = self.uy or 2 * self.ny
 
 
 def split_cells(total: int, max_per_tile: int) -> List[int]:
@@ -101,12 +109,21 @@ class PackoutOrganizer:
         self.cells_y = int(self.interior[1] // GRID)
         if self.cells_x < 1 or self.cells_y < 1:
             raise ValueError("interior is smaller than one 42 mm cell")
+        # Layout space in half-cell units.  Without baseplates the floor can be used in 21 mm steps (a 203 mm wide
+        # interior holds 4.5 cells); baseplate tiles need whole cells.
+        self.units_x = int(self.interior[0] // HALF) if self.interlock else 2 * self.cells_x
+        self.units_y = int(self.interior[1] // HALF) if self.interlock else 2 * self.cells_y
         self.items: List[Item] = []
 
     # ------------------------------------------------------------------ plan
     @property
     def leftover(self) -> Tuple[float, float]:
-        return (self.interior[0] - self.cells_x * GRID, self.interior[1] - self.cells_y * GRID)
+        return (self.interior[0] - self.units_x * HALF, self.interior[1] - self.units_y * HALF)
+
+    @property
+    def grid_cells(self) -> Tuple[float, float]:
+        """Usable floor in (possibly half) cells, e.g. (4.5, 7.0)."""
+        return (self.units_x / 2, self.units_y / 2)
 
     def footprint_fits(self, w: float, h: float) -> bool:
         """Does a w x h mm part fit on the plate (rotating it 90 deg if that helps)?"""
@@ -171,17 +188,26 @@ class PackoutOrganizer:
 
     def interlock_key_count(self) -> int:
         """Clips needed to join every pair of touching blocks (one per shared cell edge)
-        in the current layout."""
+        in the current layout.  Only blocks with sockets count, and only where their sockets line up
+        (both on the same whole-cell grid)."""
         if any(it.pos is None for it in self.items):
             self.layout()
-        owner = -np.ones((self.cells_x, self.cells_y), dtype=int)
+        owner = -np.ones((self.units_x, self.units_y), dtype=int)
+        offs = {}
         for k, it in enumerate(self.items):
-            if it.pos is not None:
-                owner[it.pos[0]:it.pos[0] + it.nx, it.pos[1]:it.pos[1] + it.ny] = k
+            if it.pos is not None and it.sockets:          # custom-shaped bases have no sockets to clip to
+                x, y = int(round(it.pos[0] * 2)), int(round(it.pos[1] * 2))
+                owner[x:x + it.ux, y:y + it.uy] = k
+                offs[k] = (x % 2, y % 2)
         n = 0
-        for a, b in ((owner[:-1, :], owner[1:, :]), (owner[:, :-1], owner[:, 1:])):
-            n += int(((a >= 0) & (b >= 0) & (a != b)).sum())
-        return n
+        for axis in (0, 1):
+            a = owner[:-1, :] if axis == 0 else owner[:, :-1]
+            b = owner[1:, :] if axis == 0 else owner[:, 1:]
+            for i, j in zip(*np.where((a >= 0) & (b >= 0) & (a != b))):
+                ia, ib = int(a[i, j]), int(b[i, j])
+                if offs[ia][1 - axis] == offs[ib][1 - axis]:       # sockets line up along the seam
+                    n += 1
+        return int(math.ceil(n / 2))
 
     def build_baseplates(self) -> Dict[str, cq.Workplane]:
         if self.interlock:
@@ -197,18 +223,25 @@ class PackoutOrganizer:
         return out
 
     # ----------------------------------------------------------------- items
-    def _register(self, name: str, kind: str, built, height: float, count: int) -> List[Item]:
+    def _register(self, name: str, kind: str, built, height: float, count: int,
+                  grid_base: bool = True, fit_size: Optional[Tuple[float, float]] = None) -> List[Item]:
+        """``fit_size`` (mm) is the real footprint of a custom-shaped block: it reserves half-cell units
+        instead of whole cells in the layout."""
         solid, nx, ny = built
-        if self.interlock:
+        if self.interlock and grid_base:
             solid = geo.add_interlock_base(solid, nx, ny)
-        if not self.footprint_fits(nx * GRID, ny * GRID):
-            raise ValueError(f"{name}: {nx}x{ny} cells ({nx*GRID:.0f}x{ny*GRID:.0f} mm) exceeds the printer bed")
+        fw, fh = fit_size if fit_size else (nx * GRID, ny * GRID)
+        if not self.footprint_fits(fw, fh):
+            raise ValueError(f"{name}: {nx}x{ny} cells ({fw:.0f}x{fh:.0f} mm) exceeds the printer bed")
         if height > self.bed[2] + 1e-6:
             raise ValueError(f"{name}: height {height:.1f} mm exceeds bed Z {self.bed[2]:.0f} mm")
         added = []
         for i in range(count):
             label = name if count == 1 else f"{name}_{i + 1}"
-            it = Item(label, kind, solid, nx, ny, height)
+            ux = uy = 0
+            if fit_size and not grid_base:
+                ux, uy = max(1, math.ceil(fit_size[0] / HALF - 1e-9)), max(1, math.ceil(fit_size[1] / HALF - 1e-9))
+            it = Item(label, kind, solid, nx, ny, height, sockets=grid_base, ux=ux, uy=uy)
             self.items.append(it)
             added.append(it)
         return added
@@ -291,6 +324,68 @@ class PackoutOrganizer:
             items[0].notes.append("exact STL shape could not be used; the object is its convex hull")
         return items
 
+    def plan_stl_cluster(self, stl_path: str, copies: int, base_thickness: float = 3.0, rotation_deg=(0, 0, 0),
+                         watch_diameter: float = 47.0, watch_thickness: float = 14.4, gap: float = 3.0,
+                         use_watch: bool = True):
+        """``(sizes, plan_for, watch)``: how many copies go in each cluster (more than one cluster when
+        the case grid or the printer bed is too small) and a function giving each size's
+        :class:`~src.cluster.ClusterPlan`."""
+        from src import cluster as cl
+
+        if copies < 1:
+            raise ValueError("copies must be >= 1")
+        mesh, watch, planner = cl.get_planner(stl_path, rotation_deg, watch_diameter, watch_thickness, gap, use_watch)
+        max_wh = (self.units_x * HALF, self.units_y * HALF)
+        bx, by, bz = self.bed
+
+        def fits(w, h):
+            if self.bed_round:
+                return np.hypot(w, h) <= bx + 1e-6
+            return ((w <= bx + 1e-6) & (h <= by + 1e-6)) | ((h <= bx + 1e-6) & (w <= by + 1e-6))
+
+        def plan_for(n: int):
+            p = planner.plan(n, max_wh=max_wh, fits=fits)
+            return p if p is not None and p.height + base_thickness <= bz + 1e-6 else None
+
+        if plan_for(1) is None:
+            raise ValueError("a single object with its watch does not fit the case or the printer bed")
+        lo, hi = 1, copies                               # largest cluster that fits: bisect
+        if plan_for(copies) is None:
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                lo, hi = (mid, hi) if plan_for(mid) is not None else (lo, mid)
+            kmax = lo
+        else:
+            kmax = copies
+        groups = math.ceil(copies / kmax)
+        sizes = [copies // groups + (1 if i < copies % groups else 0) for i in range(groups)]
+        return sizes, plan_for, watch
+
+    def add_stl_cluster(self, stl_path: str, copies: int, name: str = "stl_cluster", base_thickness: float = 3.0,
+                        rotation_deg=(0, 0, 0), watch_diameter: float = 47.0, watch_thickness: float = 14.4,
+                        gap: float = 3.0, margin: float = 3.0, use_watch: bool = True) -> List[Item]:
+        """``copies`` of the STL packed as tightly as possible on one base that hugs them (see
+        :mod:`src.cluster`).  Spacing keeps the watch (found from the charger recess in the model)
+        and the path it slides in on clear.  A cluster that would not fit the case grid or the printer
+        bed is split into the fewest equal clusters that do."""
+        sizes, plan_for, watch = self.plan_stl_cluster(stl_path, copies, base_thickness, rotation_deg,
+                                                       watch_diameter, watch_thickness, gap, use_watch)
+        items: List[Item] = []
+        cache: Dict[int, tuple] = {}
+        for i, n in enumerate(sizes):
+            if n not in cache:
+                plan = plan_for(n)
+                cache[n] = (plan,) + geo.create_stl_cluster_block(stl_path, plan, base_thickness, margin,
+                                                                   rotation_deg=rotation_deg, return_info=True)
+            plan, block, nx, ny, info = cache[n]
+            label = name if len(sizes) == 1 else f"{name}_{i + 1}"
+            it = self._register(label, "stl", (block, nx, ny), info["height_mm"], 1, grid_base=False, fit_size=info["size"])[0]
+            if watch is None and use_watch:
+                it.notes.append("no charger recess found in the model; copies are spaced by the object outline only, so check "
+                                "that a watch fits")
+            items.append(it)
+        return items
+
     def add_scanned_block(self, polygon, name: str = "scanned_tool", grid_units=None,
                           depth_mm: float = 20.0, **kw) -> List[Item]:
         """Block cut from a scanned (clearance-expanded) shapely outline, see
@@ -312,37 +407,43 @@ class PackoutOrganizer:
 
     # ---------------------------------------------------------------- layout
     def layout(self) -> List[str]:
-        """Place items on the cell grid (manual positions are kept, the rest
-        are first-fit packed, largest first).  Returns warning strings for
-        anything that does not fit or exceeds the interior height."""
-        occ = np.zeros((self.cells_x, self.cells_y), dtype=bool)
+        """Place items on the floor (manual positions are kept, the rest are first-fit packed, largest
+        first).  Positions are in cells from the front-left corner and can be half cells (``4.5``) for
+        blocks without sockets; grid blocks with sockets snap to whole cells.  Returns warning strings
+        for anything that does not fit or exceeds the interior height."""
+        occ = np.zeros((self.units_x, self.units_y), dtype=bool)
         warnings: List[str] = []
 
         def free(x, y, w, h):
-            return (x >= 0 and y >= 0 and x + w <= self.cells_x and y + h <= self.cells_y
+            return (x >= 0 and y >= 0 and x + w <= self.units_x and y + h <= self.units_y
                     and not occ[x:x + w, y:y + h].any())
+
+        def cell(v: int):                                  # units -> cells (int when whole)
+            return v // 2 if v % 2 == 0 else v / 2
 
         for it in self.items:
             if it.manual and it.pos is not None:
-                x, y = it.pos
-                if free(x, y, it.nx, it.ny):
-                    occ[x:x + it.nx, y:y + it.ny] = True
+                x, y = int(round(it.pos[0] * 2)), int(round(it.pos[1] * 2))
+                if free(x, y, it.ux, it.uy):
+                    occ[x:x + it.ux, y:y + it.uy] = True
                 else:
                     warnings.append(f"{it.name}: manual position {it.pos} is outside the grid or overlaps; auto-placing")
                     it.manual = False
         for it in sorted((i for i in self.items if not (i.manual and i.pos is not None)),
-                         key=lambda i: -i.nx * i.ny):
+                         key=lambda i: -i.ux * i.uy):
             it.pos = None
-            for y in range(self.cells_y):
-                for x in range(self.cells_x):
-                    if free(x, y, it.nx, it.ny):
-                        it.pos = (x, y)
-                        occ[x:x + it.nx, y:y + it.ny] = True
+            step = 2 if it.sockets else 1                  # socketed grid blocks stay on whole cells
+            for y in range(0, self.units_y, step):
+                for x in range(0, self.units_x, step):
+                    if free(x, y, it.ux, it.uy):
+                        it.pos = (cell(x), cell(y))
+                        occ[x:x + it.ux, y:y + it.uy] = True
                         break
                 if it.pos:
                     break
             if it.pos is None:
-                warnings.append(f"{it.name}: {it.nx}x{it.ny} cells does not fit in the remaining {self.cells_x}x{self.cells_y} grid")
+                warnings.append(f"{it.name}: {it.ux / 2:g}x{it.uy / 2:g} cells does not fit in the remaining "
+                                f"{self.units_x / 2:g}x{self.units_y / 2:g} grid")
         for it in self.items:
             warnings += [f"{it.name}: {n}" for n in it.notes]
             if it.height > self.interior[2] + 1e-6:
@@ -416,7 +517,7 @@ class PackoutOrganizer:
         lines = [
             f"Packout insert plan -- {self.model}",
             f"Interior {self.interior[0]:.0f} x {self.interior[1]:.0f} x {self.interior[2]:.0f} mm",
-            f"Grid {self.cells_x} x {self.cells_y} cells of {GRID:.0f} mm (unused: {lx:.1f} x {ly:.1f} mm)",
+            f"Grid {self.units_x / 2:g} x {self.units_y / 2:g} cells of {GRID:.0f} mm (unused: {lx:.1f} x {ly:.1f} mm)",
             (f"Print bed \u00D8{self.bed[0]:.0f} x {self.bed[2]:.0f} mm (round)" if self.bed_round
              else f"Print bed {self.bed[0]:.0f} x {self.bed[1]:.0f} x {self.bed[2]:.0f} mm"),
             (f"Baseplate-free interlocking blocks: no baseplates, {self.seam_key_count()} dovetail clip(s) join the blocks "
@@ -426,5 +527,5 @@ class PackoutOrganizer:
         ]
         for it in self.items:
             where = f"at {it.pos}" if it.pos is not None else "NOT PLACED (does not fit in the grid)"
-            lines.append(f"  {it.name}: {it.nx}x{it.ny} cells {where}, height {it.height:.1f} mm")
+            lines.append(f"  {it.name}: {it.ux / 2:g}x{it.uy / 2:g} cells {where}, height {it.height:.1f} mm")
         return "\n".join(lines) + "\n"

@@ -15,3 +15,11 @@ def puck_stl(tmp_path_factory):
     p = tmp_path_factory.mktemp("stl") / "puck.stl"
     m.export(p)
     return str(p)
+
+
+@pytest.fixture
+def bar_stl(tmp_path):
+    m = trimesh.creation.box((60.0, 20.0, 10.0))
+    p = tmp_path / "bar.stl"
+    m.export(p)
+    return str(p)

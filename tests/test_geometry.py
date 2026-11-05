@@ -175,15 +175,6 @@ def test_phone_preset_clearance_override():
 
 
 # ---- universal STL ------------------------------------------------------------
-@pytest.fixture
-def bar_stl(tmp_path):
-    import trimesh
-    m = trimesh.creation.box((60.0, 20.0, 10.0))
-    p = tmp_path / "bar.stl"
-    m.export(p)
-    return str(p)
-
-
 def test_analyze_stl_and_rotation(bar_stl):
     a = geo.analyze_stl(bar_stl)
     assert a["watertight"] and a["size"] == pytest.approx((60, 20, 10), abs=1e-6)

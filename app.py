@@ -19,6 +19,7 @@ import streamlit as st
 from cad_engine import PackoutOrganizer
 from src import geometry as geo
 from src import packout_db as pk
+from src import cluster as cl
 from src import cnc
 from src import phone_db as ph
 from src import printers as pr
@@ -67,6 +68,39 @@ def current_interior():
     if ss.case_key == pk.CUSTOM_KEY:
         return (ss.custom_x, ss.custom_y, ss.custom_z)
     return pk.CASES[ss.case_key].interior_mm
+
+
+def new_organizer() -> PackoutOrganizer:
+    """Organizer for the selected case, printer and baseplate setting."""
+    ix, iy, iz = current_interior()
+    bed = (ss.bed_x, ss.bed_x if ss.bed_round else ss.get("bed_y", ss.bed_x), ss.bed_z)
+    custom = ss.case_key == pk.CUSTOM_KEY
+    return PackoutOrganizer(None if custom else pk.CASES[ss.case_key].label, interior=(ix, iy, iz) if custom else None,
+                            bed=bed, bed_round=bool(ss.bed_round), interlock=bool(ss.interlock))
+
+
+def cluster_figure(plan, margin: float = 3.0, height: int = 360):
+    """Top-down view of a packed cluster: base outline, stands and the watches on them."""
+    from shapely import affinity
+
+    fp = cl.mesh_footprint(plan.unit.mesh)
+    wf = cl.watch_footprint(plan.unit.watch) if plan.unit.watch is not None else None
+    fig = go.Figure()
+
+    def add(poly, fill, line):
+        xs, ys = poly.exterior.xy
+        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), fill="toself", fillcolor=fill, line=dict(color=line, width=1),
+                                 mode="lines", hoverinfo="skip"))
+
+    add(cl.cluster_outline(plan, margin), "rgba(200,200,200,0.22)", "#999")
+    for dx, dy in plan.offsets:
+        add(affinity.translate(fp, dx, dy), "rgba(200,0,20,0.85)", "#EEE")
+        if wf is not None:
+            add(affinity.translate(wf, dx, dy), "rgba(90,160,255,0.35)", "#8CF")
+    fig.update_xaxes(title="X (mm)")
+    fig.update_yaxes(title="Y (mm)", scaleanchor="x")
+    fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=10, b=10))
+    return style_figure(fig, height)
 
 
 def save_upload(up):
@@ -194,10 +228,10 @@ with tab_case:
                     c[2].number_input("Depth Z (mm)", 20.0, 500.0, step=1.0, key="custom_z")
 
     ix, iy, iz = current_interior()
-    fp = pk.footprint((ix, iy, iz))
+    fp = pk.footprint((ix, iy, iz), half=bool(ss.interlock))
     m = st.columns(4)
     m[0].metric("Interior (X × Y × Z)", f"{ix:.0f} × {iy:.0f} × {iz:.0f} mm")
-    m[1].metric("42 mm grid", f"{fp['cells_x']} × {fp['cells_y']} cells")
+    m[1].metric("42 mm grid", f"{fp['cells_x']:g} × {fp['cells_y']:g} cells")
     m[2].metric("Unused margin", f"{fp['leftover_x']:.0f} × {fp['leftover_y']:.0f} mm")
     m[3].metric("Floor used by grid", f"{fp['usable_pct']:.0f}%")
 
@@ -339,16 +373,34 @@ with tab_stl, contextlib.suppress(_TabAbort):
                                     "Holder block cuts the model out of a block so it can be set into it.")
             on_base = mode_label.startswith("Object")
             if on_base:
+                copies = int(st.number_input("Copies", 1, 24, 1, key=f"cp_{h}",
+                                             help="Several copies are packed as tightly as possible onto one shared base, "
+                                                  "leaving room for the watch on each and the path it slides on by."))
+                hug = copies > 1
+                if copies == 1:
+                    hug = st.radio("Base", ["Grid cells (interlocks with other blocks)", "Hug the object (custom outline)"],
+                                   key=f"bs_{h}").startswith("Hug")
                 base_t = st.slider("Base thickness (mm)", 1.5, 10.0, 3.0, 0.5, key=f"bt_{h}")
-                sug = geo.suggest_grid_units(info["size"][:2], 0.0, 2.0)
-                st.caption(f"Smallest base that fits: {sug[0]} × {sug[1]} cells")
-                c = st.columns(2)
-                gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gbx_{h}_{rot}")
-                gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gby_{h}_{rot}")
+                use_watch, w_d, w_t, w_gap = True, 47.0, 14.4, 3.0
+                gx = gy = 1
+                if hug:
+                    use_watch = st.checkbox("Keep room for the watch", True, key=f"uw_{h}",
+                                            help="Finds the charger recess in the model and keeps the watch sitting on it, and the "
+                                                 "path it is put on along, clear of the neighbouring stands.")
+                    c = st.columns(3)
+                    w_d = c[0].number_input("Watch Ø (mm)", 20.0, 80.0, 47.0, 0.5, key=f"wd_{h}")
+                    w_t = c[1].number_input("Watch thick (mm)", 5.0, 30.0, 14.4, 0.1, key=f"wt_{h}")
+                    w_gap = c[2].number_input("Space between (mm)", 1.0, 15.0, 3.0, 0.5, key=f"wg_{h}")
+                else:
+                    sug = geo.suggest_grid_units(info["size"][:2], 0.0, 2.0)
+                    st.caption(f"Smallest base that fits: {sug[0]} × {sug[1]} cells")
+                    c = st.columns(2)
+                    gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gbx_{h}_{rot}")
+                    gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gby_{h}_{rot}")
                 name = st.text_input("Block name", stem[:24].replace(" ", "_") or "stl_object", key=f"nmb_{h}")
                 clr, pocket, cable_side, cable_floor, height = 0.0, "silhouette", False, False, None
             else:
-                base_t = 3.0
+                base_t, copies, hug, use_watch, w_d, w_t, w_gap = 3.0, 1, False, True, 47.0, 14.4, 3.0
                 fit_label = st.radio("Fit", ["Press fit (+0.4 mm)", "Loose fit (+0.6 mm)", "Custom"], key=f"fit_{h}")
                 clr = {"Press fit (+0.4 mm)": 0.4, "Loose fit (+0.6 mm)": 0.6}.get(fit_label)
                 if clr is None:
@@ -376,12 +428,35 @@ with tab_stl, contextlib.suppress(_TabAbort):
 
         cfg = dict(name=name, path=path, rot=rot, clearance=float(clr), gx=int(gx), gy=int(gy),
                    cable_side=cable_side, cable_floor=cable_floor, height=height, pocket=pocket,
-                   on_base=on_base, base_t=float(base_t))
+                   on_base=on_base, base_t=float(base_t), copies=copies, hug=bool(hug), use_watch=bool(use_watch),
+                   w_d=float(w_d), w_t=float(w_t), gap=float(w_gap))
+        cluster_kw = dict(base_thickness=float(base_t), rotation_deg=rot, watch_diameter=float(w_d),
+                          watch_thickness=float(w_t), gap=float(w_gap), use_watch=bool(use_watch))
+        if on_base and hug:                                   # live packing preview (cheap; the heavy step is cached)
+            try:
+                with st.spinner("Packing..."):
+                    sizes, plan_for, watch_found = new_organizer().plan_stl_cluster(path, copies, **cluster_kw)
+                    plan = plan_for(sizes[0])
+                with left:
+                    st.plotly_chart(cluster_figure(plan), use_container_width=True)
+                    sw, sh = plan.size
+                    msg = f"{sizes[0]} stand(s) in {sw:.0f} × {sh:.0f} mm, assembled height {plan.height + base_t:.0f} mm"
+                    if len(sizes) > 1:
+                        msg += f" - {copies} copies do not fit one case/bed, so they are split into {len(sizes)} clusters of {sizes}"
+                    if use_watch and watch_found is None:
+                        msg += ". No charger recess was found in this model, so spacing uses the object outline only."
+                    st.caption(msg)
+            except ValueError as e:
+                st.error(str(e))
         c = st.columns(2)
         if c[0].button("Preview generated block", key="prev_btn"):
             try:
                 with st.spinner("Cutting block..."):
-                    if on_base:
+                    if on_base and hug:
+                        tmp = new_organizer()
+                        first = tmp.add_stl_cluster(path, copies, name=cfg["name"] or "stl_object", **cluster_kw)[0]
+                        blk, nx, ny, binfo = first.solid, first.nx, first.ny, {"mode": "mesh"}
+                    elif on_base:
                         blk, nx, ny, binfo = geo.create_stl_on_base(
                             path, (cfg["gx"], cfg["gy"]), base_t, rotation_deg=rot, return_info=True)
                     else:
@@ -395,7 +470,9 @@ with tab_stl, contextlib.suppress(_TabAbort):
                 st.error(str(e))
         if c[1].button("Add to project", type="primary", key="add_btn"):
             try:
-                if on_base:                                   # validate fit before accepting (cheap: coarse mesh)
+                if on_base and hug:                           # validate fit before accepting (planning only)
+                    new_organizer().plan_stl_cluster(path, copies, **cluster_kw)
+                elif on_base:                                 # validate fit before accepting (cheap: coarse mesh)
                     geo.create_stl_on_base(path, (cfg["gx"], cfg["gy"]), base_t, rotation_deg=rot, max_faces=1500)
                 else:
                     geo.create_custom_stl_subtraction_block(path, cfg["gx"], cfg["gy"], cfg["clearance"], False,
@@ -419,7 +496,9 @@ with tab_stl, contextlib.suppress(_TabAbort):
         st.subheader("Blocks in this project")
         for i, it in enumerate(list(ss.stl_items)):
             c = st.columns([4, 1])
-            if it.get("on_base"):
+            if it.get("on_base") and it.get("hug"):
+                detail = f'{it["copies"]} on a shared hugging base ({it["base_t"]:g} mm) · rot {it["rot"]}'
+            elif it.get("on_base"):
                 detail = f'object on {it["base_t"]:g} mm base · rot {it["rot"]}'
             else:
                 detail = (f'+{it["clearance"]} mm · rot {it["rot"]} · '
@@ -680,12 +759,7 @@ with tab_out:
                      [dict(i) for i in ss.stl_items], [dict(i) for i in ss.scan_items]))
 
     def build():
-        ix, iy, iz = current_interior()
-        bed = (ss.bed_x, ss.bed_x if ss.bed_round else ss.get('bed_y', ss.bed_x), ss.bed_z)
-        custom = ss.case_key == pk.CUSTOM_KEY
-        org = PackoutOrganizer(None if custom else pk.CASES[ss.case_key].label,
-                               interior=(ix, iy, iz) if custom else None, bed=bed, bed_round=bool(ss.bed_round),
-                               interlock=bool(ss.interlock))
+        org = new_organizer()
         if n_phones and rack_flat:
             org.add_phone_slots(int(n_phones), phone=spec, clearance=clearance, angle=float(angle),
                                 height_mm=float(phone_h), finger_scoops=scoops)
@@ -693,6 +767,11 @@ with tab_out:
             org.add_phone_rack(int(n_phones), phone=spec, clearance=clearance, stance=rack_stance, angle=float(angle),
                                separator=sep, hold_frac=hold, cable_groove=cable_groove, vent=vent, finger_scoops=scoops)
         for it in ss.stl_items:
+            if it.get("on_base") and it.get("hug"):
+                org.add_stl_cluster(it["path"], it.get("copies", 1), name=it["name"], base_thickness=it["base_t"],
+                                    rotation_deg=it["rot"], watch_diameter=it["w_d"], watch_thickness=it["w_t"],
+                                    gap=it["gap"], use_watch=it["use_watch"])
+                continue
             if it.get("on_base"):
                 org.add_stl_on_base(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
                                     base_thickness=it["base_t"], rotation_deg=it["rot"])
@@ -707,8 +786,8 @@ with tab_out:
             org.add_hub(hub_dims=hub_dims, cable_pass_through=cable_pt)
         ss.org, ss.parts, ss.meshes, ss.zip = org, org.build_parts(), {}, {}
         ss.built_sig = project_sig()
-        ss.table = pd.DataFrame({"Item": [i.name for i in org.items], "Cells": [f"{i.nx}x{i.ny}" for i in org.items],
-                                 "Pin": False, "X cell": 0, "Y cell": 0})
+        ss.table = pd.DataFrame({"Item": [i.name for i in org.items], "Cells": [f"{i.ux / 2:g}x{i.uy / 2:g}" for i in org.items],
+                                 "Pin": False, "X cell": 0.0, "Y cell": 0.0})
         ss.table_key = ss.get("table_key", 0) + 1
 
     st.subheader("Generate")
@@ -735,7 +814,8 @@ with tab_out:
     lx, ly = org.leftover
     tiles = org.plan_tiles()
     m = st.columns(4)
-    m[0].metric("Grid", f"{org.cells_x} × {org.cells_y} cells", f"{lx:.0f} × {ly:.0f} mm unused", delta_color="off")
+    gcx, gcy = org.grid_cells
+    m[0].metric("Grid", f"{gcx:g} × {gcy:g} cells", f"{lx:.0f} × {ly:.0f} mm unused", delta_color="off")
     m[1].metric("Baseplate tiles", "none" if org.interlock else len(tiles))
     m[2].metric("Dovetail clips" if org.interlock else "Dovetail keys", org.seam_key_count())
     m[3].metric("Insert blocks", len(org.items))
@@ -747,19 +827,19 @@ with tab_out:
         st.caption("Tick **Pin** to fix an item at a cell (0,0 = front-left); the rest auto-pack.")
         edited = st.data_editor(
             ss.table, key=f"ed{ss.table_key}", hide_index=True, width="stretch", disabled=["Item", "Cells"],
-            column_config={"X cell": st.column_config.NumberColumn(min_value=0, max_value=org.cells_x - 1, step=1),
-                           "Y cell": st.column_config.NumberColumn(min_value=0, max_value=org.cells_y - 1, step=1)})
+            column_config={"X cell": st.column_config.NumberColumn(min_value=0.0, max_value=gcx - 0.5, step=0.5, format="%g"),
+                           "Y cell": st.column_config.NumberColumn(min_value=0.0, max_value=gcy - 0.5, step=0.5, format="%g")})
         for it, (_, row) in zip(org.items, edited.iterrows()):
             it.manual = bool(row["Pin"])
-            it.pos = (int(row["X cell"]), int(row["Y cell"])) if it.manual else None
+            it.pos = (float(row["X cell"]), float(row["Y cell"])) if it.manual else None
         layout_warnings = org.layout()
     unplaced = [it for it in org.items if it.pos is None]
     with problems:
         if unplaced:
-            used = sum(it.nx * it.ny for it in org.items if it.pos is not None)
+            used = sum(it.ux * it.uy for it in org.items if it.pos is not None) / 4
             st.error("**Not placed in the layout (no room left):** "
                      + ", ".join(f"{it.name} ({it.nx}×{it.ny} cells)" for it in unplaced)
-                     + f". The {org.cells_x}×{org.cells_y} grid has {org.cells_x * org.cells_y - used} free cells. "
+                     + f". The {gcx:g}×{gcy:g} grid has {gcx * gcy - used:g} free cells. "
                      "Remove a phone slot or block, choose a larger case, or shrink the block's grid size. "
                      "Unplaced blocks are still exported, but not positioned.")
         for w in layout_warnings:
@@ -767,23 +847,25 @@ with tab_out:
                 st.warning(w)
     with right:
         fig = go.Figure()
-        W, D = org.cells_x * GRID, org.cells_y * GRID
+        W, D = org.units_x * GRID / 2, org.units_y * GRID / 2
         fig.add_shape(type="rect", x0=0, y0=0, x1=org.interior[0], y1=org.interior[1], line=dict(color="#888", dash="dot"))
         palette = [RED, "#F58518", "#4c78a8", "#54a24b", "#b279a2", "#72b7b2"]
         for t in ([] if org.interlock else tiles):
             fig.add_shape(type="rect", x0=t.cx * GRID, y0=t.cy * GRID, x1=(t.cx + t.nx) * GRID, y1=(t.cy + t.ny) * GRID,
                           line=dict(color="#EEE", width=3), fillcolor="rgba(255,255,255,0.05)")
-        for i in range(org.cells_x + 1):
-            fig.add_shape(type="line", x0=i * GRID, x1=i * GRID, y0=0, y1=D, line=dict(color="#555", width=1))
-        for j in range(org.cells_y + 1):
-            fig.add_shape(type="line", y0=j * GRID, y1=j * GRID, x0=0, x1=W, line=dict(color="#555", width=1))
+        for i in range(org.units_x + 1):                   # solid line per cell, dotted per half cell
+            fig.add_shape(type="line", x0=i * GRID / 2, x1=i * GRID / 2, y0=0, y1=D,
+                          line=dict(color="#555", width=1, dash="solid" if i % 2 == 0 else "dot"))
+        for j in range(org.units_y + 1):
+            fig.add_shape(type="line", y0=j * GRID / 2, y1=j * GRID / 2, x0=0, x1=W,
+                          line=dict(color="#555", width=1, dash="solid" if j % 2 == 0 else "dot"))
         for k, it in enumerate(org.items):
             if it.pos is None:
                 continue
             x0, y0 = it.pos[0] * GRID, it.pos[1] * GRID
-            fig.add_shape(type="rect", x0=x0 + 1, y0=y0 + 1, x1=x0 + it.nx * GRID - 1, y1=y0 + it.ny * GRID - 1,
+            fig.add_shape(type="rect", x0=x0 + 1, y0=y0 + 1, x1=x0 + it.ux * GRID / 2 - 1, y1=y0 + it.uy * GRID / 2 - 1,
                           fillcolor=palette[k % len(palette)], opacity=0.85, line=dict(width=0))
-            fig.add_annotation(x=x0 + it.nx * GRID / 2, y=y0 + it.ny * GRID / 2, text=it.name.replace("_", " "),
+            fig.add_annotation(x=x0 + it.ux * GRID / 4, y=y0 + it.uy * GRID / 4, text=it.name.replace("_", " "),
                                showarrow=False, font=dict(color="white", size=11))
         fig.update_xaxes(range=[-5, org.interior[0] + 5], title="X (mm)", constrain="domain", gridcolor="#333")
         fig.update_yaxes(range=[-5, org.interior[1] + 5], title="Y (mm)", scaleanchor="x", gridcolor="#333")

@@ -22,6 +22,15 @@ Notes: by default (**Baseplate-free** option in tab 1) there are no baseplates: 
 socket at the middle of each cell edge, and blocks that touch are locked together with small loose bow-tie clips (the app counts
 them from the layout). Untick the option for Gridfinity feet on printed baseplate tiles joined by dovetail keys.
 
+Several copies (e.g. 6 watch stands): set **Copies** in the Custom STL tab. They are packed as tightly as possible onto **one base that
+hugs them** (no feet, flat underside). Spacing is not the bounding box: the charger recess is found in the model (`src/cluster.py`),
+the watch sitting on it (Ø47 x 14.4 mm, editable) and the path it slides on by are kept free, and neighbours may interleave. A cluster
+that would not fit the case grid or the printer bed is split into the fewest equal clusters that do.
+
+Half cells: without baseplates the layout uses the floor in 21 mm steps (the compact case is 4.5 x 7 cells = 189 x 294 mm, 90% of the floor,
+instead of 4 x 7). Custom-shaped bases (hugging clusters) reserve their real footprint in half cells and can be placed at e.g. x = 0.5;
+grid blocks with sockets stay on whole cells, and clips are only counted where two blocks' sockets line up. Baseplate tiles still use whole cells.
+
 Custom STL tab: **Object on a base** fuses the model itself to a grid base (print it as one piece); **Holder block** cuts the model
 out of a block (drop-in outline pocket by default, or the exact 3D negative).
 Case interiors come from Milwaukee's published specs and exclude dividers – use Custom to override.
