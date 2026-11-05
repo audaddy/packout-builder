@@ -482,6 +482,47 @@ def create_custom_stl_subtraction_block(
         cable_floor_groove=cable_floor_groove, pocket=pocket, return_info=return_info)
 
 
+def create_stl_on_base(
+    stl_path: str,
+    block_grid_size: Optional[Tuple[int, int]] = None,
+    base_thickness: float = 3.0,
+    margin: float = 2.0,
+    rotation_deg=(0, 0, 0),
+    max_faces: int = 20000,
+    return_info: bool = False,
+):
+    """The STL itself, standing on an integrated base plate that fits the grid.
+
+    The part is rotated by ``rotation_deg``, centred on an ``nx`` x ``ny`` cell
+    base (Gridfinity feet underneath, ``base_thickness`` mm slab on top of the
+    feet) and fused to it - print it as one piece and it sits in the case like
+    any other block.  Its bottom is sunk 0.3 mm into the slab so the two fuse
+    into one solid.  Grid size defaults to the smallest that leaves ``margin``
+    mm of base around the part.
+
+    Returns ``(block, nx, ny)`` or, with ``return_info``, ``(block, nx, ny, info)``.
+    """
+    if base_thickness < 1.0:
+        raise ValueError("base_thickness must be >= 1 mm")
+    solid, info = load_stl_as_solid(stl_path, 0.0, max_faces=max_faces, rotation_deg=rotation_deg)
+    sx, sy, part_h = info["size_x"], info["size_y"], info["size_z"]
+    nx, ny = block_grid_size if block_grid_size else (_cells_for(sx, margin), _cells_for(sy, margin))
+    if nx < 1 or ny < 1:
+        raise ValueError("grid size must be >= 1")
+    if sx > nx * GRID - 2 * CELL_CLEAR + 1e-6 or sy > ny * GRID - 2 * CELL_CLEAR + 1e-6:
+        raise ValueError(f"the {sx:.1f}x{sy:.1f} mm part does not fit a {nx}x{ny} cell base; use at least "
+                         f"{_cells_for(sx, 0.0)}x{_cells_for(sy, 0.0)}")
+    sink = 0.3
+    top = FOOT_H + base_thickness
+    base = create_base_block(nx, ny, top)
+    part = cq.Workplane("XY").add(solid.translate(cq.Vector(nx * GRID / 2, ny * GRID / 2, top - sink)))
+    block = base.union(part, clean=True)
+    if not block.val().isValid():
+        raise ValueError("the part could not be fused to its base (invalid solid)")
+    info = dict(info, base_top=top, height_mm=top - sink + part_h)
+    return (block, nx, ny, info) if return_info else (block, nx, ny)
+
+
 # --------------------------------------------------------------------------- #
 # Scanned contour (photo scanner) -> block
 # --------------------------------------------------------------------------- #
@@ -613,6 +654,47 @@ def create_hub_cutout_block(
                                         centered=(True, False, False)).translate((cx, -1, floor_z))
         block = block.cut(groove).cut(tunnel)
     return block.clean(), nx, ny
+
+
+# --------------------------------------------------------------------------- #
+# Baseplate-free interlocking blocks
+# --------------------------------------------------------------------------- #
+def _key_socket(clearance: float = 0.15) -> cq.Workplane:
+    """Dovetail socket (bow-tie, long axis along X) opening on the underside."""
+    return (cq.Workplane("XY").polyline(_bowtie_pts(8.0, 8.0, 14.0)).close()
+            .offset2D(clearance).extrude(KEY_DEPTH))
+
+
+def interlock_socket_positions(nx: int, ny: int) -> List[Tuple[float, float, bool]]:
+    """``(x, y, rotated)`` for a half-socket on every perimeter cell edge, centred on
+    the cell boundary (so two blocks that touch share one full socket)."""
+    pos = []
+    for j in range(ny):
+        pos += [(0.0, (j + 0.5) * GRID, False), (nx * GRID, (j + 0.5) * GRID, False)]
+    for i in range(nx):
+        pos += [((i + 0.5) * GRID, 0.0, True), ((i + 0.5) * GRID, ny * GRID, True)]
+    return pos
+
+
+def add_interlock_base(block: cq.Workplane, nx: int, ny: int, key_clearance: float = 0.15) -> cq.Workplane:
+    """Make a block baseplate-free.
+
+    The Gridfinity feet are replaced by a flat (chamfered) underside, and a
+    half dovetail socket is cut into the bottom at the middle of every cell edge
+    around the perimeter.  Any two blocks placed next to each other on the grid
+    then share a full socket that a loose :func:`create_dovetail_key` clip locks,
+    so the layout holds together without printing baseplates.
+    """
+    w, d = nx * GRID - 2 * CELL_CLEAR, ny * GRID - 2 * CELL_CLEAR
+    prism = (cq.Workplane("XY").center(nx * GRID / 2, ny * GRID / 2).rect(w, d).extrude(FOOT_H)
+             .edges("<Z").chamfer(0.5))
+    block = block.union(prism, clean=True)
+    proto = _key_socket(key_clearance)
+    sockets = []
+    for (x, y, rotated) in interlock_socket_positions(nx, ny):
+        s = proto.rotate((0, 0, 0), (0, 0, 1), 90) if rotated else proto
+        sockets.append(s.translate((x, y, 0)).val())
+    return block.cut(cq.Workplane("XY").add(cq.Compound.makeCompound(sockets))).clean()
 
 
 # --------------------------------------------------------------------------- #

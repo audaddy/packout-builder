@@ -78,6 +78,7 @@ class PackoutOrganizer:
         interior: Optional[Sequence[float]] = None,
         bed: Sequence[float] = (200.0, 200.0, 200.0),
         bed_round: bool = False,
+        interlock: bool = False,
     ):
         if interior is not None:
             self.interior = tuple(float(v) for v in interior)
@@ -89,6 +90,9 @@ class PackoutOrganizer:
             self.model = model
         self.bed = tuple(float(v) for v in bed)
         self.bed_round = bool(bed_round)
+        # interlock: no baseplates; every block gets a flat underside with half dovetail
+        # sockets on all its cell edges, and neighbouring blocks are joined by loose clips
+        self.interlock = bool(interlock)
         if self.bed_round:                       # round plate: bed[0] is the diameter
             self.bed = (self.bed[0], self.bed[0], self.bed[2])
         if min(self.interior) <= 0 or min(self.bed) <= 0:
@@ -159,11 +163,29 @@ class PackoutOrganizer:
 
     def seam_key_count(self) -> int:
         """Number of loose dovetail clips needed (each seam cell has one)."""
+        if self.interlock:
+            return self.interlock_key_count()
         cols = len(split_cells(self.cells_x, self.max_cells_per_tile[0]))
         rows = len(split_cells(self.cells_y, self.max_cells_per_tile[1]))
         return (cols - 1) * self.cells_y + (rows - 1) * self.cells_x
 
+    def interlock_key_count(self) -> int:
+        """Clips needed to join every pair of touching blocks (one per shared cell edge)
+        in the current layout."""
+        if any(it.pos is None for it in self.items):
+            self.layout()
+        owner = -np.ones((self.cells_x, self.cells_y), dtype=int)
+        for k, it in enumerate(self.items):
+            if it.pos is not None:
+                owner[it.pos[0]:it.pos[0] + it.nx, it.pos[1]:it.pos[1] + it.ny] = k
+        n = 0
+        for a, b in ((owner[:-1, :], owner[1:, :]), (owner[:, :-1], owner[:, 1:])):
+            n += int(((a >= 0) & (b >= 0) & (a != b)).sum())
+        return n
+
     def build_baseplates(self) -> Dict[str, cq.Workplane]:
+        if self.interlock:
+            return {}
         cache: Dict[tuple, cq.Workplane] = {}
         out = {}
         for t in self.plan_tiles():
@@ -177,6 +199,8 @@ class PackoutOrganizer:
     # ----------------------------------------------------------------- items
     def _register(self, name: str, kind: str, built, height: float, count: int) -> List[Item]:
         solid, nx, ny = built
+        if self.interlock:
+            solid = geo.add_interlock_base(solid, nx, ny)
         if not self.footprint_fits(nx * GRID, ny * GRID):
             raise ValueError(f"{name}: {nx}x{ny} cells ({nx*GRID:.0f}x{ny*GRID:.0f} mm) exceeds the printer bed")
         if height > self.bed[2] + 1e-6:
@@ -218,6 +242,15 @@ class PackoutOrganizer:
         items = self._register(name, "stl", (block, nx, ny), self._height(block), 1)
         if info["mode"] == "convex_hull":
             items[0].notes.append("exact STL shape could not be used; the pocket is its convex hull")
+        return items
+
+    def add_stl_on_base(self, stl_path: str, name: str = "stl_object", grid_units=None, **kw) -> List[Item]:
+        """The STL itself on an integrated grid base (see
+        :func:`src.geometry.create_stl_on_base`)."""
+        block, nx, ny, info = geo.create_stl_on_base(stl_path, grid_units, return_info=True, **kw)
+        items = self._register(name, "stl", (block, nx, ny), info["height_mm"], 1)
+        if info["mode"] == "convex_hull":
+            items[0].notes.append("exact STL shape could not be used; the object is its convex hull")
         return items
 
     def add_scanned_block(self, polygon, name: str = "scanned_tool", grid_units=None,
@@ -349,7 +382,9 @@ class PackoutOrganizer:
             f"Grid {self.cells_x} x {self.cells_y} cells of {GRID:.0f} mm (unused: {lx:.1f} x {ly:.1f} mm)",
             (f"Print bed \u00D8{self.bed[0]:.0f} x {self.bed[2]:.0f} mm (round)" if self.bed_round
              else f"Print bed {self.bed[0]:.0f} x {self.bed[1]:.0f} x {self.bed[2]:.0f} mm"),
-            f"Baseplate tiles: {len(self.plan_tiles())}, dovetail keys: {self.seam_key_count()}",
+            (f"Baseplate-free interlocking blocks: no baseplates, {self.seam_key_count()} dovetail clip(s) join the blocks "
+             f"(clips go in the underside sockets where two blocks touch)" if self.interlock
+             else f"Baseplate tiles: {len(self.plan_tiles())}, dovetail keys: {self.seam_key_count()}"),
             "", "Placement (cell x, y from the front-left interior corner):",
         ]
         for it in self.items:

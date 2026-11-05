@@ -42,6 +42,7 @@ for k, v in (("custom_x", 203.0), ("custom_y", 305.0), ("custom_z", 95.0),
              ("bed_x", _p0.x), ("bed_y", _p0.y), ("bed_z", _p0.z), ("bed_round", _p0.round_bed),
              ("bed_preset", _p0.label)):
     ss.setdefault(k, v)
+ss.setdefault("interlock", True)
 ss.setdefault("stl_items", [])
 ss.setdefault("stl_preview", None)
 ss.setdefault("scan_items", [])
@@ -212,6 +213,12 @@ with tab_case:
         c[1].number_input("Bed Y (mm)", 50.0, 1000.0, step=5.0, key="bed_y")
         c[2].number_input("Bed Z (mm)", 20.0, 1000.0, step=5.0, key="bed_z")
 
+    st.subheader("Baseplates")
+    st.checkbox("Baseplate-free: interlocking blocks (no baseplates to print)", key="interlock",
+                help="Every block gets a flat underside with dovetail sockets on all its cell edges. Blocks that touch are "
+                     "locked together with small loose clips, so you print only the blocks and a handful of clips. "
+                     "Untick for Gridfinity feet on printed baseplate tiles instead.")
+
 # =========================================================================== TAB 2
 with tab_phone:
     st.subheader("Phone slots")
@@ -288,40 +295,61 @@ with tab_stl, contextlib.suppress(_TabAbort):
 
         left, right = st.columns([3, 2])
         with right:
-            fit_label = st.radio("Fit", ["Press fit (+0.4 mm)", "Loose fit (+0.6 mm)", "Custom"], key=f"fit_{h}")
-            clr = {"Press fit (+0.4 mm)": 0.4, "Loose fit (+0.6 mm)": 0.6}.get(fit_label)
-            if clr is None:
-                clr = st.slider("Clearance (mm)", 0.0, 1.5, 0.4, 0.05, key=f"clr_{h}")
-            sug = geo.suggest_grid_units(info["size"][:2], clr)
-            st.caption(f"Smallest grid that fits: {sug[0]} × {sug[1]} cells")
-            c = st.columns(2)
-            gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gx_{h}_{rot}_{clr}")
-            gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gy_{h}_{rot}_{clr}")
-            pocket_label = st.radio(
-                "Pocket shape", ["Drop-in outline (recommended)", "Exact 3D negative"], key=f"pk_{h}",
-                help="Drop-in outline cuts the part's top-down silhouette straight down, so it always drops in and "
-                     "stands, hooks or overhangs don't turn the block solid. Exact 3D negative is a mould of the part "
-                     "and only works for parts without overhangs.")
-            pocket = "exact" if pocket_label.startswith("Exact") else "silhouette"
-            st.markdown("**Cable routing**")
-            cable_side = st.checkbox("Side channel (exits front)", False, key=f"cs_{h}")
-            cable_floor = st.checkbox("Floor groove (under the item)", False, key=f"cf_{h}")
-            height_auto = st.checkbox("Block height = part height", True, key=f"ha_{h}")
-            height = None if height_auto else st.slider("Block height (mm)", 15.0, 120.0, 40.0, 1.0, key=f"hh_{h}")
-            name = st.text_input("Block name", stem[:24].replace(" ", "_") or "stl_block", key=f"nm_{h}")
+            mode_label = st.radio(
+                "What to make", ["Object on a base (print the object itself)", "Holder block (pocket cut out of a block)"],
+                key=f"md_{h}", help="Object on a base fuses the model to a grid base so it sits in the case as a printed part. "
+                                    "Holder block cuts the model out of a block so it can be set into it.")
+            on_base = mode_label.startswith("Object")
+            if on_base:
+                base_t = st.slider("Base thickness (mm)", 1.5, 10.0, 3.0, 0.5, key=f"bt_{h}")
+                sug = geo.suggest_grid_units(info["size"][:2], 0.0, 2.0)
+                st.caption(f"Smallest base that fits: {sug[0]} × {sug[1]} cells")
+                c = st.columns(2)
+                gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gbx_{h}_{rot}")
+                gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gby_{h}_{rot}")
+                name = st.text_input("Block name", stem[:24].replace(" ", "_") or "stl_object", key=f"nmb_{h}")
+                clr, pocket, cable_side, cable_floor, height = 0.0, "silhouette", False, False, None
+            else:
+                base_t = 3.0
+                fit_label = st.radio("Fit", ["Press fit (+0.4 mm)", "Loose fit (+0.6 mm)", "Custom"], key=f"fit_{h}")
+                clr = {"Press fit (+0.4 mm)": 0.4, "Loose fit (+0.6 mm)": 0.6}.get(fit_label)
+                if clr is None:
+                    clr = st.slider("Clearance (mm)", 0.0, 1.5, 0.4, 0.05, key=f"clr_{h}")
+                sug = geo.suggest_grid_units(info["size"][:2], clr)
+                st.caption(f"Smallest grid that fits: {sug[0]} × {sug[1]} cells")
+                c = st.columns(2)
+                gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gx_{h}_{rot}_{clr}")
+                gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gy_{h}_{rot}_{clr}")
+                pocket_label = st.radio(
+                    "Pocket shape", ["Drop-in outline (recommended)", "Exact 3D negative"], key=f"pk_{h}",
+                    help="Drop-in outline cuts the part's top-down silhouette straight down, so it always drops in and "
+                         "stands, hooks or overhangs don't turn the block solid. Exact 3D negative is a mould of the part "
+                         "and only works for parts without overhangs.")
+                pocket = "exact" if pocket_label.startswith("Exact") else "silhouette"
+                st.markdown("**Cable routing**")
+                cable_side = st.checkbox("Side channel (exits front)", False, key=f"cs_{h}")
+                cable_floor = st.checkbox("Floor groove (under the item)", False, key=f"cf_{h}")
+                height_auto = st.checkbox("Block height = part height", True, key=f"ha_{h}")
+                height = None if height_auto else st.slider("Block height (mm)", 15.0, 120.0, 40.0, 1.0, key=f"hh_{h}")
+                name = st.text_input("Block name", stem[:24].replace(" ", "_") or "stl_block", key=f"nm_{h}")
         with left:
             v, f = cached_preview_mesh(path, rot)
             st.plotly_chart(mesh_figure(v, f), use_container_width=True)
 
         cfg = dict(name=name, path=path, rot=rot, clearance=float(clr), gx=int(gx), gy=int(gy),
-                   cable_side=cable_side, cable_floor=cable_floor, height=height, pocket=pocket)
+                   cable_side=cable_side, cable_floor=cable_floor, height=height, pocket=pocket,
+                   on_base=on_base, base_t=float(base_t))
         c = st.columns(2)
         if c[0].button("Preview generated block", key="prev_btn"):
             try:
                 with st.spinner("Cutting block..."):
-                    blk, nx, ny, binfo = geo.create_custom_stl_subtraction_block(
-                        path, cfg["gx"], cfg["gy"], cfg["clearance"], cable_side, rotation_deg=rot,
-                        cable_floor_groove=cable_floor, height_mm=height, pocket=pocket, return_info=True)
+                    if on_base:
+                        blk, nx, ny, binfo = geo.create_stl_on_base(
+                            path, (cfg["gx"], cfg["gy"]), base_t, rotation_deg=rot, return_info=True)
+                    else:
+                        blk, nx, ny, binfo = geo.create_custom_stl_subtraction_block(
+                            path, cfg["gx"], cfg["gy"], cfg["clearance"], cable_side, rotation_deg=rot,
+                            cable_floor_groove=cable_floor, height_mm=height, pocket=pocket, return_info=True)
                     mesh = PackoutOrganizer.to_mesh(blk, 0.05, 0.3)
                 ss.stl_preview = dict(v=mesh.vertices, f=mesh.faces, mode=binfo["mode"], cells=(nx, ny))
             except ValueError as e:
@@ -329,8 +357,11 @@ with tab_stl, contextlib.suppress(_TabAbort):
                 st.error(str(e))
         if c[1].button("Add to project", type="primary", key="add_btn"):
             try:
-                geo.create_custom_stl_subtraction_block(path, cfg["gx"], cfg["gy"], cfg["clearance"], False,
-                                                        rotation_deg=rot, pocket=pocket)      # validate fit before accepting
+                if on_base:                                   # validate fit before accepting (cheap: coarse mesh)
+                    geo.create_stl_on_base(path, (cfg["gx"], cfg["gy"]), base_t, rotation_deg=rot, max_faces=1500)
+                else:
+                    geo.create_custom_stl_subtraction_block(path, cfg["gx"], cfg["gy"], cfg["clearance"], False,
+                                                            rotation_deg=rot, pocket=pocket)
                 base, n = cfg["name"] or "stl_block", 2
                 taken = {i["name"] for i in ss.stl_items} | {i["name"] for i in ss.scan_items}
                 while cfg["name"] in taken:
@@ -350,9 +381,13 @@ with tab_stl, contextlib.suppress(_TabAbort):
         st.subheader("Blocks in this project")
         for i, it in enumerate(list(ss.stl_items)):
             c = st.columns([4, 1])
-            c[0].markdown(f'<div class="pk-spec"><b>{html.escape(it["name"])}</b> · {it["gx"]}×{it["gy"]} cells · '
-                          f'+{it["clearance"]} mm · rot {it["rot"]} · {"exact pocket" if it.get("pocket") == "exact" else "drop-in outline"}'
-                          f'{" · side channel" if it["cable_side"] else ""}{" · floor groove" if it["cable_floor"] else ""}</div>',
+            if it.get("on_base"):
+                detail = f'object on {it["base_t"]:g} mm base · rot {it["rot"]}'
+            else:
+                detail = (f'+{it["clearance"]} mm · rot {it["rot"]} · '
+                          f'{"exact pocket" if it.get("pocket") == "exact" else "drop-in outline"}'
+                          f'{" · side channel" if it["cable_side"] else ""}{" · floor groove" if it["cable_floor"] else ""}')
+            c[0].markdown(f'<div class="pk-spec"><b>{html.escape(it["name"])}</b> · {it["gx"]}×{it["gy"]} cells · {detail}</div>',
                           unsafe_allow_html=True)
             if c[1].button("Remove", key=f"rm_{i}_{it['name']}"):
                 ss.stl_items.pop(i)
@@ -604,11 +639,16 @@ with tab_out:
         bed = (ss.bed_x, ss.bed_x if ss.bed_round else ss.get('bed_y', ss.bed_x), ss.bed_z)
         custom = ss.case_key == pk.CUSTOM_KEY
         org = PackoutOrganizer(None if custom else pk.CASES[ss.case_key].label,
-                               interior=(ix, iy, iz) if custom else None, bed=bed, bed_round=bool(ss.bed_round))
+                               interior=(ix, iy, iz) if custom else None, bed=bed, bed_round=bool(ss.bed_round),
+                               interlock=bool(ss.interlock))
         if n_phones:
             org.add_phone_slots(int(n_phones), phone=spec, clearance=clearance, angle=float(angle),
                                 height_mm=float(phone_h), finger_scoops=scoops)
         for it in ss.stl_items:
+            if it.get("on_base"):
+                org.add_stl_on_base(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
+                                    base_thickness=it["base_t"], rotation_deg=it["rot"])
+                continue
             org.add_stl_insert(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
                                clearance_mm=it["clearance"], cable_channel=it["cable_side"],
                                rotation_deg=it["rot"], cable_floor_groove=it["cable_floor"], height_mm=it["height"],
@@ -643,8 +683,8 @@ with tab_out:
     tiles = org.plan_tiles()
     m = st.columns(4)
     m[0].metric("Grid", f"{org.cells_x} × {org.cells_y} cells", f"{lx:.0f} × {ly:.0f} mm unused", delta_color="off")
-    m[1].metric("Baseplate tiles", len(tiles))
-    m[2].metric("Dovetail keys", org.seam_key_count())
+    m[1].metric("Baseplate tiles", "none" if org.interlock else len(tiles))
+    m[2].metric("Dovetail clips" if org.interlock else "Dovetail keys", org.seam_key_count())
     m[3].metric("Insert blocks", len(org.items))
 
     st.subheader("Layout canvas")
@@ -665,7 +705,7 @@ with tab_out:
         W, D = org.cells_x * GRID, org.cells_y * GRID
         fig.add_shape(type="rect", x0=0, y0=0, x1=org.interior[0], y1=org.interior[1], line=dict(color="#888", dash="dot"))
         palette = [RED, "#F58518", "#4c78a8", "#54a24b", "#b279a2", "#72b7b2"]
-        for t in tiles:
+        for t in ([] if org.interlock else tiles):
             fig.add_shape(type="rect", x0=t.cx * GRID, y0=t.cy * GRID, x1=(t.cx + t.nx) * GRID, y1=(t.cy + t.ny) * GRID,
                           line=dict(color="#EEE", width=3), fillcolor="rgba(255,255,255,0.05)")
         for i in range(org.cells_x + 1):
@@ -684,7 +724,9 @@ with tab_out:
         fig.update_yaxes(range=[-5, org.interior[1] + 5], title="Y (mm)", scaleanchor="x", gridcolor="#333")
         fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
         st.plotly_chart(style_figure(fig, 520), use_container_width=True)
-        st.caption("Bright outlines = baseplate tiles (each fits the printer bed); thin lines = 42 mm cells.")
+        st.caption("Blocks interlock with loose dovetail clips where they touch (no baseplates); thin lines = 42 mm cells."
+                   if org.interlock else
+                   "Bright outlines = baseplate tiles (each fits the printer bed); thin lines = 42 mm cells.")
 
     st.subheader("Part preview")
     name = st.selectbox("Part", list(parts), key="part_sel")
@@ -707,6 +749,9 @@ with tab_out:
     fmt = st.radio("Format", ["stl", "step", "both"], horizontal=True, key="fmt")
     if st.button("Prepare zip", key="zip_btn"):
         with st.spinner("Exporting..."):
+            if org.interlock:                          # clip count follows the current (pinned) layout
+                org.layout()
+                parts = org.build_parts()
             ss.zip[fmt] = org.export_zip(parts, fmt)
     if fmt in ss.zip:
         st.download_button(f"Download packout_inserts_{fmt}.zip", ss.zip[fmt], file_name=f"packout_inserts_{fmt}.zip",

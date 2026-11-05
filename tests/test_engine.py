@@ -187,3 +187,36 @@ def test_scanned_block_height_warning_vs_low_profile_case():
     o = PackoutOrganizer(get_case("8431").label)          # 45.7 mm interior
     o.add_scanned_block(box(0, 0, 60, 30), depth_mm=40)   # block = 4.75 + 1.5 + 40 = 46.25 mm
     assert any("interior height" in w for w in o.layout())
+
+
+# ---- baseplate-free interlock mode ---------------------------------------
+def test_interlock_mode_has_no_baseplates_and_counts_clips(puck_stl):
+    o = PackoutOrganizer(next(iter(PACKOUT_MODELS)), interlock=True)
+    o.add_stl_insert(puck_stl, name="a")
+    o.add_stl_insert(puck_stl, name="b")
+    o.items[0].manual, o.items[0].pos = True, (0, 0)
+    o.items[1].manual, o.items[1].pos = True, (o.items[0].nx, 0)       # touching along x
+    assert o.layout() == [] or all("height" in w for w in o.layout())
+    assert o.build_baseplates() == {}
+    assert o.seam_key_count() == min(o.items[0].ny, o.items[1].ny)
+    parts = o.build_parts()
+    assert not any(k.startswith("baseplate") for k in parts)
+    assert sum(k.startswith("dovetail_key") for k in parts) == o.seam_key_count()
+    assert "no baseplates" in o.summary()
+    for it in o.items:
+        assert o.check_part(it.solid)["valid"]
+    # separated blocks need no clips
+    o.items[1].pos = (o.items[0].nx + 1, 0)
+    assert o.seam_key_count() == 0
+
+
+def test_default_mode_unchanged_still_has_baseplates():
+    o = PackoutOrganizer(next(iter(PACKOUT_MODELS)))
+    assert not o.interlock and o.build_baseplates()
+
+
+def test_stl_on_base_in_engine(puck_stl):
+    o = PackoutOrganizer(next(iter(PACKOUT_MODELS)), interlock=True)
+    items = o.add_stl_on_base(puck_stl, name="obj")
+    assert items[0].nx >= 1 and items[0].height > 0
+    assert o.check_part(items[0].solid)["valid"]

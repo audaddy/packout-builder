@@ -387,3 +387,44 @@ def test_stl_silhouette_pocket_is_deeper_open_than_exact(hook_stl):
 def test_stl_pocket_mode_validated(hook_stl):
     with pytest.raises(ValueError):
         geo.create_custom_stl_subtraction_block(hook_stl, pocket="bogus")
+
+
+# ---- STL on an integrated base --------------------------------------------
+def test_stl_on_base_fuses_part_to_grid_base(bar_stl):
+    blk, nx, ny, info = geo.create_stl_on_base(bar_stl, base_thickness=3.0, return_info=True)
+    assert_printable(blk)
+    assert info["mode"] == "mesh" and (nx, ny) == (2, 1)
+    x0, y0, z0, x1, y1, z1 = geo.exact_bbox(blk)
+    assert (x1 - x0) == pytest.approx(nx * GRID - 0.5, abs=1e-3)       # base footprint = grid cells
+    assert z1 == pytest.approx(info["height_mm"], abs=1e-3)
+    cx, cy = nx * GRID / 2, ny * GRID / 2
+    assert inside(blk, cx, cy, FOOT_H + 3.0 + 2.0)                     # the part stands on the base (solid, no pocket)
+    assert inside(blk, cx, cy, FOOT_H + 1.0)                           # slab
+
+
+def test_stl_on_base_rejects_part_larger_than_grid(bar_stl):
+    with pytest.raises(ValueError):
+        geo.create_stl_on_base(bar_stl, (1, 1))
+    with pytest.raises(ValueError):
+        geo.create_stl_on_base(bar_stl, base_thickness=0.5)
+
+
+# ---- baseplate-free interlock ------------------------------------------------
+def test_interlock_base_flat_underside_with_edge_sockets():
+    blk = geo.create_base_block(2, 2, 20)
+    il = geo.add_interlock_base(blk, 2, 2)
+    assert_printable(il)
+    assert vol(il) > vol(blk)                                          # feet gaps filled by a flat prism
+    # a socket sits at the middle of each perimeter cell edge: open at the bottom, solid above it
+    for (x, y, rot) in geo.interlock_socket_positions(2, 2):
+        dx, dy = (0.0, 4.0) if not rot else (4.0, 0.0)                 # a few mm into the block from the edge
+        px = min(max(x + (0.5 if x == 0 else -0.5 if x == 2 * GRID else dx), 0.4), 2 * GRID - 0.4)
+        py = min(max(y + (0.5 if y == 0 else -0.5 if y == 2 * GRID else dy), 0.4), 2 * GRID - 0.4)
+        assert not inside(il, px, py, 1.0)
+        assert inside(il, px, py, geo.KEY_DEPTH + 1.0)
+    assert inside(il, GRID, GRID, 1.0)                                 # middle of the underside is solid
+
+
+def test_interlock_socket_count():
+    assert len(geo.interlock_socket_positions(1, 1)) == 4
+    assert len(geo.interlock_socket_positions(3, 2)) == 2 * 3 + 2 * 2

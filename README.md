@@ -17,7 +17,12 @@ Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organize
 * `app.py` – Streamlit UI (layout view, 3D preview, print checks, export).
 * `assets/sample_watch_charger.stl` is a **placeholder puck**; upload the real Galaxy Watch Ultra charger STL (Z-up) in the UI.
 
-Notes: blocks sit on baseplate tiles via Gridfinity feet; tiles join with printed bow-tie dovetail keys.
+Notes: by default (**Baseplate-free** option in tab 1) there are no baseplates: every block has a flat underside with a half dovetail
+socket at the middle of each cell edge, and blocks that touch are locked together with small loose bow-tie clips (the app counts
+them from the layout). Untick the option for Gridfinity feet on printed baseplate tiles joined by dovetail keys.
+
+Custom STL tab: **Object on a base** fuses the model itself to a grid base (print it as one piece); **Holder block** cuts the model
+out of a block (drop-in outline pocket by default, or the exact 3D negative).
 Case interiors come from Milwaukee's published specs and exclude dividers – use Custom to override.
 STL tolerance offset is a miter-compensated vertex offset (approximate on very sharp or thin features).
 
