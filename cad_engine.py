@@ -216,7 +216,7 @@ class PackoutOrganizer:
         block, nx, ny, info = geo.create_custom_stl_subtraction_block(
             stl_path, gx, gy, clearance_mm, cable_channel, return_info=True, **kw)
         items = self._register(name, "stl", (block, nx, ny), self._height(block), 1)
-        if info["mode"] != "mesh":
+        if info["mode"] == "convex_hull":
             items[0].notes.append("exact STL shape could not be used; the pocket is its convex hull")
         return items
 

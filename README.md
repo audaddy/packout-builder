@@ -12,7 +12,7 @@ Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organize
 * `src/packout_db.py`, `src/assets/packout_images.py` – case specs and offline SVG thumbnails.
 * `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml). Font is Helvetica Neue (Milwaukee's site font; system font on macOS/iOS, Helvetica/Arial elsewhere).
 * `src/scanner.py` – photo scanner: calibration-sheet PDF, ArUco homography, silhouette extraction, shapely smoothing / clearance / finger scoops, SVG and DXF profile export.
-* `src/geometry.py` – CadQuery builders: phone slot, STL insert, scanned-contour block, USB-C hub, baseplate tile, dovetail key.
+* `src/geometry.py` – CadQuery builders (custom STL blocks default to a *drop-in outline* pocket – the part's top-down silhouette cut straight down, so stands/hooks/overhangs don't fill the block; `pocket="exact"` gives the 3D negative): phone slot, STL insert, scanned-contour block, USB-C hub, baseplate tile, dovetail key.
 * `cad_engine.py` – `PackoutOrganizer`: tiling to the printer bed, layout, validation, STL/STEP zip export.
 * `app.py` – Streamlit UI (layout view, 3D preview, print checks, export).
 * `assets/sample_watch_charger.stl` is a **placeholder puck**; upload the real Galaxy Watch Ultra charger STL (Z-up) in the UI.

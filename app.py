@@ -297,6 +297,12 @@ with tab_stl, contextlib.suppress(_TabAbort):
             c = st.columns(2)
             gx = c[0].number_input("Grid X (cells)", 1, 10, sug[0], key=f"gx_{h}_{rot}_{clr}")
             gy = c[1].number_input("Grid Y (cells)", 1, 10, sug[1], key=f"gy_{h}_{rot}_{clr}")
+            pocket_label = st.radio(
+                "Pocket shape", ["Drop-in outline (recommended)", "Exact 3D negative"], key=f"pk_{h}",
+                help="Drop-in outline cuts the part's top-down silhouette straight down, so it always drops in and "
+                     "stands, hooks or overhangs don't turn the block solid. Exact 3D negative is a mould of the part "
+                     "and only works for parts without overhangs.")
+            pocket = "exact" if pocket_label.startswith("Exact") else "silhouette"
             st.markdown("**Cable routing**")
             cable_side = st.checkbox("Side channel (exits front)", False, key=f"cs_{h}")
             cable_floor = st.checkbox("Floor groove (under the item)", False, key=f"cf_{h}")
@@ -308,14 +314,14 @@ with tab_stl, contextlib.suppress(_TabAbort):
             st.plotly_chart(mesh_figure(v, f), use_container_width=True)
 
         cfg = dict(name=name, path=path, rot=rot, clearance=float(clr), gx=int(gx), gy=int(gy),
-                   cable_side=cable_side, cable_floor=cable_floor, height=height)
+                   cable_side=cable_side, cable_floor=cable_floor, height=height, pocket=pocket)
         c = st.columns(2)
         if c[0].button("Preview generated block", key="prev_btn"):
             try:
                 with st.spinner("Cutting block..."):
                     blk, nx, ny, binfo = geo.create_custom_stl_subtraction_block(
                         path, cfg["gx"], cfg["gy"], cfg["clearance"], cable_side, rotation_deg=rot,
-                        cable_floor_groove=cable_floor, height_mm=height, return_info=True)
+                        cable_floor_groove=cable_floor, height_mm=height, pocket=pocket, return_info=True)
                     mesh = PackoutOrganizer.to_mesh(blk, 0.05, 0.3)
                 ss.stl_preview = dict(v=mesh.vertices, f=mesh.faces, mode=binfo["mode"], cells=(nx, ny))
             except ValueError as e:
@@ -324,7 +330,7 @@ with tab_stl, contextlib.suppress(_TabAbort):
         if c[1].button("Add to project", type="primary", key="add_btn"):
             try:
                 geo.create_custom_stl_subtraction_block(path, cfg["gx"], cfg["gy"], cfg["clearance"], False,
-                                                        rotation_deg=rot)      # validate fit before accepting
+                                                        rotation_deg=rot, pocket=pocket)      # validate fit before accepting
                 base, n = cfg["name"] or "stl_block", 2
                 taken = {i["name"] for i in ss.stl_items} | {i["name"] for i in ss.scan_items}
                 while cfg["name"] in taken:
@@ -335,7 +341,7 @@ with tab_stl, contextlib.suppress(_TabAbort):
                 st.error(str(e))
         if ss.stl_preview:
             p = ss.stl_preview
-            if p["mode"] != "mesh":
+            if p["mode"] == "convex_hull":
                 st.warning("The exact STL shape could not be used; the pocket is its convex hull.")
             st.caption(f"Generated block: {p['cells'][0]} × {p['cells'][1]} cells")
             st.plotly_chart(mesh_figure(p["v"], p["f"], "#C8C8C8", 420), use_container_width=True)
@@ -345,7 +351,7 @@ with tab_stl, contextlib.suppress(_TabAbort):
         for i, it in enumerate(list(ss.stl_items)):
             c = st.columns([4, 1])
             c[0].markdown(f'<div class="pk-spec"><b>{html.escape(it["name"])}</b> · {it["gx"]}×{it["gy"]} cells · '
-                          f'+{it["clearance"]} mm · rot {it["rot"]}'
+                          f'+{it["clearance"]} mm · rot {it["rot"]} · {"exact pocket" if it.get("pocket") == "exact" else "drop-in outline"}'
                           f'{" · side channel" if it["cable_side"] else ""}{" · floor groove" if it["cable_floor"] else ""}</div>',
                           unsafe_allow_html=True)
             if c[1].button("Remove", key=f"rm_{i}_{it['name']}"):
@@ -605,7 +611,8 @@ with tab_out:
         for it in ss.stl_items:
             org.add_stl_insert(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
                                clearance_mm=it["clearance"], cable_channel=it["cable_side"],
-                               rotation_deg=it["rot"], cable_floor_groove=it["cable_floor"], height_mm=it["height"])
+                               rotation_deg=it["rot"], cable_floor_groove=it["cable_floor"], height_mm=it["height"],
+                               pocket=it.get("pocket", "silhouette"))
         for it in ss.scan_items:
             org.add_scanned_block(wkt.loads(it["wkt"]), name=it["name"], grid_units=(it["gx"], it["gy"]), depth_mm=it["depth"])
         if use_hub:

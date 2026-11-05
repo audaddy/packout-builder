@@ -259,6 +259,8 @@ def test_custom_stl_block_validation(bar_stl):
 
 def test_custom_stl_return_info(bar_stl):
     *_, info = geo.create_custom_stl_subtraction_block(bar_stl, return_info=True)
+    assert info["mode"] == "silhouette"
+    *_, info = geo.create_custom_stl_subtraction_block(bar_stl, pocket="exact", return_info=True)
     assert info["mode"] == "mesh"
 
 
@@ -348,3 +350,40 @@ def test_scanned_block_explicit_height_and_bowtie_repair():
     assert_printable(blk)
     tall, nx, ny, info = geo.create_scanned_contour_block(sg.box(0, 0, 40, 20), depth_mm=10, height_mm=40, return_info=True)
     assert info["height_mm"] == 40 and geo.exact_bbox(tall)[5] == pytest.approx(40)
+
+
+# ---- silhouette (drop-in) pocket ------------------------------------------
+@pytest.fixture
+def hook_stl(tmp_path):
+    """Charging-stand-like part: a base slab with an arm overhanging it, so its
+    exact 3D negative could not be dropped in from above."""
+    import trimesh
+    base = trimesh.creation.box((40, 30, 6))
+    post = trimesh.creation.box((8, 30, 40)); post.apply_translation((-16, 0, 20))
+    arm = trimesh.creation.box((30, 30, 6)); arm.apply_translation((-3, 0, 40))
+    m = trimesh.util.concatenate([base, post, arm])
+    path = tmp_path / "hook.stl"
+    m.export(path)
+    return str(path)
+
+
+def test_stl_silhouette_pocket_lets_overhanging_part_drop_in(hook_stl):
+    blk, nx, ny, info = geo.create_custom_stl_subtraction_block(hook_stl, return_info=True)
+    assert info["mode"] == "silhouette"
+    assert_printable(blk)
+    # the full top-down footprint is open at the top, even under the arm's overhang
+    cx, cy, top = nx * GRID / 2, ny * GRID / 2, blk.val().BoundingBox().zmax
+    for dx in (-18, 0, 15):
+        assert not inside(blk, cx + dx, cy, top - 1)
+        assert not inside(blk, cx + dx, cy, FOOT_H + 1.5 + 3)
+
+
+def test_stl_silhouette_pocket_is_deeper_open_than_exact(hook_stl):
+    sil, *_ = geo.create_custom_stl_subtraction_block(hook_stl, pocket="silhouette")
+    exact, *_ = geo.create_custom_stl_subtraction_block(hook_stl, pocket="exact")
+    assert vol(sil) < vol(exact)          # exact negative leaves the space under the arm filled
+
+
+def test_stl_pocket_mode_validated(hook_stl):
+    with pytest.raises(ValueError):
+        geo.create_custom_stl_subtraction_block(hook_stl, pocket="bogus")

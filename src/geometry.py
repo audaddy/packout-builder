@@ -338,6 +338,34 @@ def load_stl_as_solid(stl_path: str, offset: float = 0.4, max_faces: int = 2500,
                    "size_z": float(size[2]), "faces": int(len(grown.faces))}
 
 
+def stl_silhouette(stl_path: str, offset: float = 0.4, rotation_deg=(0, 0, 0)):
+    """Top-down outline of an STL (union of all projected triangles), grown by
+    ``offset`` mm, as ``(polygon, size_xyz)``.  The polygon is centred on the
+    origin.  Extruding it straight down gives a pocket the part can always be
+    dropped into, whatever overhangs or hooks it has.
+    """
+    import shapely
+    from shapely import affinity
+    from shapely.geometry import MultiPolygon
+
+    mesh = _load_oriented_mesh(stl_path, rotation_deg)
+    lo, hi = mesh.bounds
+    tris = mesh.triangles[:, :, :2]
+    keep = np.abs(np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])) > 1e-9
+    union = shapely.union_all(shapely.polygons(tris[keep]))
+    if isinstance(union, MultiPolygon):
+        union = union.convex_hull if len(union.geoms) > 8 else union.buffer(0.05).buffer(-0.05)
+    poly = union.buffer(offset, join_style="round", quad_segs=8).simplify(0.05)
+    if isinstance(poly, MultiPolygon):                  # separate islands: bridge them
+        poly = poly.buffer(0.5).buffer(-0.5)
+        if isinstance(poly, MultiPolygon):
+            poly = poly.convex_hull
+    poly = shapely.Polygon(poly.exterior)               # fill through-holes: simpler pocket, part still drops in
+    minx, miny, maxx, maxy = poly.bounds
+    poly = affinity.translate(poly, -(minx + maxx) / 2, -(miny + maxy) / 2)
+    return poly, tuple(float(v) for v in (hi - lo))
+
+
 def create_stl_insert_block(
     stl_path: str,
     block_grid_size: Optional[Tuple[int, int]] = None,
@@ -353,6 +381,7 @@ def create_stl_insert_block(
     rotation_deg=(0, 0, 0),
     cable_floor_groove: bool = False,
     groove_depth: float = 3.0,
+    pocket: str = "silhouette",
     return_info: bool = False,
 ):
     """Block with the STL (e.g. Galaxy Watch Ultra charger) subtracted.
@@ -365,24 +394,45 @@ def create_stl_insert_block(
     ``cable_floor_groove`` a groove sunk below the pocket floor.  A finger
     scoop is cut towards +Y.
 
+    ``pocket`` chooses the cavity: ``"silhouette"`` (default) cuts the part's
+    top-down outline straight down to the floor - the part drops in from above
+    and the block keeps its material (stands, hooks and other overhanging parts
+    would otherwise be encased in an almost solid block); ``"exact"`` cuts the
+    true 3D negative of the part (a mould; only sensible for parts without
+    overhangs).
+
     Returns ``(block, nx, ny)``, or ``(block, nx, ny, info)`` with
-    ``return_info=True`` (``info['mode']`` is ``'convex_hull'`` if the exact
-    mesh could not be converted).
+    ``return_info=True`` (``info['mode']`` is ``'silhouette'``, ``'mesh'`` or
+    ``'convex_hull'`` if the exact mesh could not be converted).
     """
-    solid, info = load_stl_as_solid(stl_path, offset, rotation_deg=rotation_deg)
+    if pocket not in ("silhouette", "exact"):
+        raise ValueError("pocket must be 'silhouette' or 'exact'")
+    if pocket == "silhouette":
+        outline, size = stl_silhouette(stl_path, offset, rotation_deg)
+        solid = None
+        info = {"mode": "silhouette", "size_x": size[0], "size_y": size[1], "size_z": size[2], "faces": 0}
+        sx, sy = outline.bounds[2] - outline.bounds[0], outline.bounds[3] - outline.bounds[1]
+    else:
+        solid, info = load_stl_as_solid(stl_path, offset, rotation_deg=rotation_deg)
+        sx, sy = info["size_x"] + 2 * offset, info["size_y"] + 2 * offset
     part_h = info["size_z"]
-    sx, sy = info["size_x"] + 2 * offset, info["size_y"] + 2 * offset
     floor_z = FOOT_H + floor_clearance + (groove_depth if cable_floor_groove else 0.0)
-    H = height_mm if height_mm else floor_z + part_h + offset
+    H = height_mm if height_mm else floor_z + part_h + (offset if solid is not None else 0.0)
     nx, ny = block_grid_size if block_grid_size else (_cells_for(sx, wall_min), _cells_for(sy, wall_min))
     if (nx * GRID - sx) / 2 < wall_min - 1e-6 or (ny * GRID - sy) / 2 < wall_min - 1e-6:
         raise ValueError(f"grid_size {nx}x{ny} leaves walls < {wall_min} mm around the STL")
 
     cx, cy = nx * GRID / 2, ny * GRID / 2
-    cutter = cq.Workplane("XY").add(solid).translate((cx, cy, floor_z + offset))
-    # Open the top: union with a copy lifted past the block top.
-    lift = max(H - floor_z, 1.0) + 1.0
-    cutter = cutter.union(cutter.translate((0, 0, lift)), clean=True)
+    if solid is None:
+        cutter = cq.Workplane("XY").workplane(offset=floor_z)
+        for ring in [outline.exterior] + list(outline.interiors):
+            cutter = cutter.polyline([(x + cx, y + cy) for x, y in _ring_points(ring.coords)]).close()
+        cutter = cutter.extrude(max(H - floor_z, 1.0) + 1.0)       # +1 mm: opens cleanly through the top
+    else:
+        cutter = cq.Workplane("XY").add(solid).translate((cx, cy, floor_z + offset))
+        # Open the top: union with a copy lifted past the block top.
+        lift = max(H - floor_z, 1.0) + 1.0
+        cutter = cutter.union(cutter.translate((0, 0, lift)), clean=True)
 
     block = create_base_block(nx, ny, H).cut(cutter)
     if cable_channel:
@@ -409,6 +459,7 @@ def create_custom_stl_subtraction_block(
     cable_floor_groove: bool = False,
     height_mm: Optional[float] = None,
     finger_scoop: bool = True,
+    pocket: str = "silhouette",
     return_info: bool = False,
 ):
     """Universal STL holder: a ``grid_units_x`` x ``grid_units_y`` block with
@@ -428,7 +479,7 @@ def create_custom_stl_subtraction_block(
     return create_stl_insert_block(
         stl_file_path, block_grid_size=grid, offset=clearance_mm, height_mm=height_mm,
         cable_channel=cable_channel_bool, finger_scoop=finger_scoop, rotation_deg=rotation_deg,
-        cable_floor_groove=cable_floor_groove, return_info=return_info)
+        cable_floor_groove=cable_floor_groove, pocket=pocket, return_info=return_info)
 
 
 # --------------------------------------------------------------------------- #
