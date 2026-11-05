@@ -75,3 +75,22 @@ def test_printer_presets_in_ui():
     presets = [s for s in at.selectbox if s.label == "Preset"][0]          # fresh handle after each run
     presets.select(presets.options[1]).run()
     assert at.session_state["bed_round"] is False and at.session_state["bed_y"] == 360.0
+
+
+def test_layout_flags_stale_project_and_unplaced_blocks():
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    button(at, "Generate project").click().run()
+    assert not at.exception
+    assert not any("changed since" in w.value for w in at.warning)
+    # a block added after generating must not leave the old layout on screen
+    [c for c in at.checkbox if "demo photo" in c.label][0].check()
+    at.run()
+    button(at, "Preview block").click().run()
+    button(at, "Add to project").click().run()
+    at.run()
+    assert any("changed since" in w.value for w in at.warning)
+    assert "Layout canvas" not in [s.value for s in at.subheader]
+    # regenerating shows it; the default 2 phones + hub + a 4x2 scanned tool leave nothing free for a 2x2 block
+    button(at, "Generate project").click().run()
+    assert not any("changed since" in w.value for w in at.warning)
+    assert "scanned_tool" in [s for s in at.selectbox if s.label == "Part"][0].options

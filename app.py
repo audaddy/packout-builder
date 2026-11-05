@@ -268,7 +268,7 @@ with tab_phone:
 # =========================================================================== TAB 3
 with tab_stl, contextlib.suppress(_TabAbort):
     st.subheader("Universal STL block")
-    st.caption("Drop any STL (charger, meter, tool, battery adapter). It is cut out of a grid block with your chosen clearance.")
+    st.caption("Drop any STL (stand, charger, meter, tool, battery adapter). Print it on a grid base, or cut it out of a holder block with your chosen clearance.")
     up = st.file_uploader("Drag & drop an .stl file", type=["stl"], key="stl_up")
     if up is None:
         st.info("Upload an STL to analyse it, set its orientation, and size the block.")
@@ -634,6 +634,12 @@ with tab_scan:
 
 # =========================================================================== TAB 4
 with tab_out:
+    def project_sig() -> str:
+        """Everything build() reads, so the results can be flagged as out of date."""
+        return repr((current_interior(), ss.case_key, ss.bed_x, ss.get("bed_y"), ss.bed_z, bool(ss.bed_round), bool(ss.interlock),
+                     int(n_phones), spec.key, clearance, angle, phone_h, scoops, use_hub, hub_dims, cable_pt,
+                     [dict(i) for i in ss.stl_items], [dict(i) for i in ss.scan_items]))
+
     def build():
         ix, iy, iz = current_interior()
         bed = (ss.bed_x, ss.bed_x if ss.bed_round else ss.get('bed_y', ss.bed_x), ss.bed_z)
@@ -658,6 +664,7 @@ with tab_out:
         if use_hub:
             org.add_hub(hub_dims=hub_dims, cable_pass_through=cable_pt)
         ss.org, ss.parts, ss.meshes, ss.zip = org, org.build_parts(), {}, {}
+        ss.built_sig = project_sig()
         ss.table = pd.DataFrame({"Item": [i.name for i in org.items], "Cells": [f"{i.nx}x{i.ny}" for i in org.items],
                                  "Pin": False, "X cell": 0, "Y cell": 0})
         ss.table_key = ss.get("table_key", 0) + 1
@@ -676,6 +683,10 @@ with tab_out:
     if "org" not in ss:
         st.info("Configure the tabs, then press **Generate project**.")
         st.stop()
+    if ss.get("built_sig") != project_sig():
+        st.warning("The project changed since it was last generated (blocks, phones, hub, case or printer settings). "
+                   "Press **Generate project** to update the layout and export.")
+        st.stop()
 
     org: PackoutOrganizer = ss.org
     parts = ss.parts
@@ -688,6 +699,7 @@ with tab_out:
     m[3].metric("Insert blocks", len(org.items))
 
     st.subheader("Layout canvas")
+    problems = st.container()
     left, right = st.columns([1, 2])
     with left:
         st.caption("Tick **Pin** to fix an item at a cell (0,0 = front-left); the rest auto-pack.")
@@ -698,8 +710,19 @@ with tab_out:
         for it, (_, row) in zip(org.items, edited.iterrows()):
             it.manual = bool(row["Pin"])
             it.pos = (int(row["X cell"]), int(row["Y cell"])) if it.manual else None
-        for w in org.layout():
-            st.warning(w)
+        layout_warnings = org.layout()
+    unplaced = [it for it in org.items if it.pos is None]
+    with problems:
+        if unplaced:
+            used = sum(it.nx * it.ny for it in org.items if it.pos is not None)
+            st.error("**Not placed in the layout (no room left):** "
+                     + ", ".join(f"{it.name} ({it.nx}×{it.ny} cells)" for it in unplaced)
+                     + f". The {org.cells_x}×{org.cells_y} grid has {org.cells_x * org.cells_y - used} free cells. "
+                     "Remove a phone slot or block, choose a larger case, or shrink the block's grid size. "
+                     "Unplaced blocks are still exported, but not positioned.")
+        for w in layout_warnings:
+            if not any(w.startswith(f"{it.name}: ") and "does not fit" in w for it in unplaced):
+                st.warning(w)
     with right:
         fig = go.Figure()
         W, D = org.cells_x * GRID, org.cells_y * GRID

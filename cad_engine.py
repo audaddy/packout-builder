@@ -314,7 +314,8 @@ class PackoutOrganizer:
     # ----------------------------------------------------------------- parts
     def build_parts(self, include_baseplates: bool = True, include_keys: bool = True
                     ) -> Dict[str, cq.Workplane]:
-        parts: Dict[str, cq.Workplane] = {}
+        """Insert blocks first (so they are what you see first), then baseplates, then clips."""
+        parts: Dict[str, cq.Workplane] = {it.name: it.solid for it in self.items}
         if include_baseplates:
             parts.update(self.build_baseplates())
         if include_keys:
@@ -323,8 +324,6 @@ class PackoutOrganizer:
                 key = geo.create_dovetail_key()
                 for i in range(n):
                     parts[f"dovetail_key_{i + 1:02d}"] = key
-        for it in self.items:
-            parts[it.name] = it.solid
         return parts
 
     # ---------------------------------------------------------------- export
@@ -388,5 +387,6 @@ class PackoutOrganizer:
             "", "Placement (cell x, y from the front-left interior corner):",
         ]
         for it in self.items:
-            lines.append(f"  {it.name}: {it.nx}x{it.ny} cells at {it.pos}, height {it.height:.1f} mm")
+            where = f"at {it.pos}" if it.pos is not None else "NOT PLACED (does not fit in the grid)"
+            lines.append(f"  {it.name}: {it.nx}x{it.ny} cells {where}, height {it.height:.1f} mm")
         return "\n".join(lines) + "\n"
