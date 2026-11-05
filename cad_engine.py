@@ -232,6 +232,44 @@ class PackoutOrganizer:
                                 f"- the lid will not close; increase the tilt angle")
         return items
 
+    def add_phone_rack(self, count: int, phone=None, **kw) -> List[Item]:
+        """Phone rack(s) holding ``count`` phones in total (see
+        :func:`src.geometry.create_phone_rack_block`).  A rack that would outgrow the
+        printer bed is split into the fewest equal-ish racks that each fit it."""
+        if count < 1:
+            raise ValueError("count must be >= 1")
+        spec = (get_phone(phone) if isinstance(phone, str) else phone) if phone is not None else None
+        dims = spec.dims if spec else kw.get("phone_dims", geo.S23_DIMS)
+        clr = kw["clearance"] if kw.get("clearance") is not None else (spec.clearance if spec else 0.6)
+        plan_kw = {k: kw[k] for k in ("stance", "angle", "separator", "end_wall", "hold_frac", "cable_groove",
+                                      "groove_depth", "floor_clearance", "wall_min", "height_mm") if k in kw}
+
+        def fits(n: int) -> bool:
+            pl = geo.phone_rack_plan(dims, n, clr, **plan_kw)
+            return self.footprint_fits(pl["nx"] * GRID, pl["ny"] * GRID) and pl["H"] <= self.bed[2] + 1e-6
+
+        if not fits(1):
+            raise ValueError("a single phone rack does not fit the printer bed")
+        nmax = 1
+        while nmax < count and fits(nmax + 1):
+            nmax += 1
+        racks = math.ceil(count / nmax)
+        sizes = [count // racks + (1 if i < count % racks else 0) for i in range(racks)]
+        base = f"{spec.key}_rack" if spec else "phone_rack"
+        items: List[Item] = []
+        cache: Dict[int, tuple] = {}
+        for i, n in enumerate(sizes):
+            if n not in cache:
+                cache[n] = geo.create_phone_rack_block(phone=phone, count=n, return_info=True, **kw)
+            block, nx, ny, info = cache[n]
+            label = base if racks == 1 else f"{base}_{i + 1}"
+            it = self._register(label, "phone", (block, nx, ny), self._height(block), 1)[0]
+            if info["rise"] > self.interior[2] + 1e-6:
+                it.notes.append(f"seated phones reach {info['rise']:.0f} mm but the interior is {self.interior[2]:.0f} mm "
+                                f"- the lid will not close; lean the phones back further")
+            items.append(it)
+        return items
+
     def add_stl_insert(self, stl_path: str, name: str = "watch_charger", grid_units=None,
                        clearance_mm: float = 0.4, cable_channel: bool = False, **kw) -> List[Item]:
         """Subtract any STL from a grid block (see

@@ -220,3 +220,27 @@ def test_stl_on_base_in_engine(puck_stl):
     items = o.add_stl_on_base(puck_stl, name="obj")
     assert items[0].nx >= 1 and items[0].height > 0
     assert o.check_part(items[0].solid)["valid"]
+
+
+# ---- phone racks in the engine -------------------------------------------
+def test_phone_rack_is_one_block_for_all_phones():
+    o = PackoutOrganizer(next(iter(PACKOUT_MODELS)), bed=(256, 256, 256))
+    items = o.add_phone_rack(5, phone="Samsung Galaxy S23", stance="landscape")
+    assert len(items) == 1 and items[0].name == "s23_rack"
+    assert o.check_part(items[0].solid)["valid"]
+
+
+def test_phone_rack_splits_to_fit_small_bed():
+    o = PackoutOrganizer("Organizer #48-22-8430", bed=(100, 300, 200))
+    items = o.add_phone_rack(30, phone="Samsung Galaxy S23", stance="portrait")      # too long for a 300 mm bed in one piece
+    assert len(items) >= 2 and all(i.nx * 42 <= 100 or i.ny * 42 <= 100 for i in items)
+    assert [i.name for i in items] == [f"s23_rack_{k}" for k in range(1, len(items) + 1)]
+    assert all(o.footprint_fits(i.nx * 42, i.ny * 42) for i in items)
+    with pytest.raises(ValueError):
+        PackoutOrganizer(bed=(60, 60, 200)).add_phone_rack(1, phone="Samsung Galaxy S23")
+
+
+def test_phone_rack_lid_warning():
+    o = PackoutOrganizer("Compact Organizer #48-22-8435")          # 99 mm interior; upright S23 is far taller
+    o.add_phone_rack(2, phone="Samsung Galaxy S23", stance="portrait", angle=0)
+    assert any("lid will not close" in w for w in o.layout())

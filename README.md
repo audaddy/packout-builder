@@ -8,6 +8,7 @@ Parametric, 3D-printable Gridfinity-style inserts for Milwaukee Packout organize
 
 * `src/printers.py` – printer presets: Bambu Lab P2S, Prusa XL, Prusa CORE One L, Prusa HT90 (round Ø300 bed; tiles must fit the circle diagonally) or Custom.
 * `src/cnc.py` – Shapeoko 4 XL G-code for scanned-tool pockets (see below).
+* Phone racks (tab 2): all phones go into **one rack block** after the Maker Club phone rack - slots side by side with 5 mm separators, a holder low enough that ~40% of each phone sticks out, a cable groove under each phone, arch-topped airflow windows and finger scoops. Any number of phones: the grid grows with the count, and a rack longer than the printer bed is split into the fewest equal racks that fit. Style *Auto* picks upright, on its long edge (low), or flat single slots so the phones clear the lid.
 * `src/phone_db.py` – phone presets (Galaxy S23 / S23+ / S23 Ultra) + `register_phone()` / JSON loading (`assets/phones_custom.json`).
 * `src/packout_db.py`, `src/assets/packout_images.py` – case specs and offline SVG thumbnails.
 * `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml). Font is Helvetica Neue (Milwaukee's site font; system font on macOS/iOS, Helvetica/Arial elsewhere).

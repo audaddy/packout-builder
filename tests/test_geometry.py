@@ -428,3 +428,68 @@ def test_interlock_base_flat_underside_with_edge_sockets():
 def test_interlock_socket_count():
     assert len(geo.interlock_socket_positions(1, 1)) == 4
     assert len(geo.interlock_socket_positions(3, 2)) == 2 * 3 + 2 * 2
+
+
+# ---- phone rack (N slots in one block) --------------------------------------
+S23 = "Samsung Galaxy S23"
+
+
+def _phone_overlap_cm3(blk, info, stance, count, angle):
+    """Volume of material that a real phone-sized box would collide with in every slot."""
+    import math
+    length, width, thick = geo.S23_DIMS
+    vert, across = (length, width) if stance == "portrait" else (width, length)
+    a = math.radians(angle)
+    ph = cq.Workplane("XY").box(across, thick, vert, centered=(True, True, False)).translate((0, 0, 0.05))
+    ph = ph.rotate((0, 0, 0), (1, 0, 0), -angle)
+    lift = (info["T"] / 2) * math.sin(a)          # the slot's lowest corner sits at floor_z (slot is T thick, phone is thinner)
+    total = 0.0
+    nx, ny = info["nx"], info["ny"]
+    cx, cy = nx * GRID / 2, ny * GRID / 2
+    for i in range(count):
+        y = cy + i * info["pitch"] - (info["ymid0"] * 2 + (count - 1) * info["pitch"]) / 2
+        placed = ph.translate((cx, y, info["floor_z"] + lift))
+        total += blk.val().intersect(placed.val()).Volume()
+    return total / 1000
+
+
+@pytest.mark.parametrize("stance,angle", [("portrait", 0), ("portrait", 20), ("landscape", 0), ("landscape", 15)])
+def test_phone_rack_holds_phones_without_collision(stance, angle):
+    blk, nx, ny, info = geo.create_phone_rack_block(S23, 5, clearance=0.6, stance=stance, angle=angle, return_info=True)
+    assert_printable(blk)
+    assert info["count"] == 5
+    assert _phone_overlap_cm3(blk, info, stance, 5, angle) < 0.05      # < 50 mm3 of grazing contact
+
+
+def test_phone_rack_any_number_of_phones():
+    sizes = {}
+    for n in (1, 2, 3, 5, 8, 10, 13):
+        blk, nx, ny, info = geo.create_phone_rack_block(S23, n, return_info=True)
+        assert_printable(blk)
+        sizes[n] = ny
+        # one slot per phone: the slot axis of every phone is open at mid height
+        for i in range(n):
+            y = ny * GRID / 2 + i * info["pitch"] - (info["ymid0"] * 2 + (n - 1) * info["pitch"]) / 2
+            assert not inside(blk, nx * GRID / 2, y, info["floor_z"] + 40)
+    assert list(sizes.values()) == sorted(sizes.values()) and sizes[13] > sizes[1]
+
+
+def test_phone_rack_features_change_the_solid():
+    base, *_ = geo.create_phone_rack_block(S23, 5, vent=False, finger_scoops=False, cable_groove=False)
+    vented, *_ = geo.create_phone_rack_block(S23, 5, vent=True, finger_scoops=False, cable_groove=False)
+    scooped, *_ = geo.create_phone_rack_block(S23, 5, vent=False, finger_scoops=True, cable_groove=False)
+    assert vol(vented) < vol(base) and vol(scooped) < vol(base)
+    taller, *_ = geo.create_phone_rack_block(S23, 5, hold_frac=0.9)
+    shorter, *_ = geo.create_phone_rack_block(S23, 5, hold_frac=0.5)
+    assert geo.exact_bbox(taller)[5] > geo.exact_bbox(shorter)[5]
+
+
+def test_phone_rack_validation_and_pose_choice():
+    for kw in (dict(count=0), dict(count=61), dict(count=3, stance="x"), dict(count=3, angle=70),
+               dict(count=3, separator=1.0), dict(count=3, hold_frac=0.1)):
+        with pytest.raises(ValueError):
+            geo.create_phone_rack_block(S23, **kw)
+    dims = geo.get_phone(S23).dims
+    assert geo.choose_rack_pose(dims, 0.6, 98)[0] == "landscape"         # 99 mm case: stands on its long edge
+    assert geo.choose_rack_pose(dims, 0.6, 400) == ("portrait", 0)       # deep enough: upright like the reference
+    assert geo.choose_rack_pose(dims, 0.6, 45) is None                   # low-profile case: flat single slots

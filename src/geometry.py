@@ -206,6 +206,198 @@ def min_tilt_for_height(phone_dims: Sequence[float], clearance: float, max_heigh
 
 
 # --------------------------------------------------------------------------- #
+# Phone rack (N slots in one block)
+# --------------------------------------------------------------------------- #
+RACK_STANCES = ("portrait", "landscape")
+
+
+def _rack_dims(phone_dims: Sequence[float], stance: str) -> Tuple[float, float, float]:
+    """(vertical extent, extent across the rack, thickness) for a stance.
+
+    ``portrait``: the phone stands on its short edge (port down) like the rack
+    in the Maker Club design; ``landscape``: it stands on a long edge, which is
+    much lower (width instead of length) so it fits shallow cases.
+    """
+    length, width, thick = phone_dims
+    if stance == "portrait":
+        return length, width, thick
+    if stance == "landscape":
+        return width, length, thick
+    raise ValueError(f"stance must be one of {RACK_STANCES}")
+
+
+def rack_floor_z(stance: str, cable_groove: bool, groove_depth: float, floor_clearance: float = 1.5) -> float:
+    """Height of the slot floor: portrait racks lift it to make room for the plug and cable underneath."""
+    return FOOT_H + floor_clearance + (groove_depth if (cable_groove and stance == "portrait") else 0.0)
+
+
+def rack_rise(phone_dims: Sequence[float], clearance: float, stance: str, angle: float,
+              cable_groove: bool = True, groove_depth: float = 10.0, floor_clearance: float = 1.5) -> float:
+    """Height above z=0 reached by the top of a phone seated in a rack slot."""
+    vert, _, thick = _rack_dims(phone_dims, stance)
+    a = math.radians(angle)
+    return (rack_floor_z(stance, cable_groove, groove_depth, floor_clearance)
+            + (vert + 2 * clearance) * math.cos(a) + (thick + 2 * clearance) * math.sin(a))
+
+
+def choose_rack_pose(phone_dims: Sequence[float], clearance: float, max_height: float,
+                     cable_groove: bool = True, groove_depth: float = 10.0,
+                     max_tilt: int = 45) -> Optional[Tuple[str, int]]:
+    """``(stance, lean_degrees)`` that keeps seated phones below ``max_height``.
+
+    Prefers the upright look of the reference rack (small lean), then the lower
+    on-its-edge stance, and only then a large lean.  ``None`` if nothing up to
+    ``max_tilt`` degrees fits (use flat single slots instead).
+    """
+    order = [(st, a) for lo, hi in ((0, 15), (16, max_tilt)) for st in RACK_STANCES for a in range(lo, hi + 1)]
+    # within a band prefer the smallest lean for each stance, portrait first
+    for band in ((0, 15), (16, max_tilt)):
+        for a in range(band[0], band[1] + 1):
+            for st in RACK_STANCES:
+                if rack_rise(phone_dims, clearance, st, a, cable_groove, groove_depth) <= max_height:
+                    return st, a
+    return None
+
+
+def phone_rack_plan(phone_dims: Sequence[float], count: int, clearance: float, stance: str = "portrait",
+                    angle: float = 0.0, separator: float = 5.0, end_wall: float = 6.0, hold_frac: float = 0.6,
+                    cable_groove: bool = True, groove_depth: float = 10.0, floor_clearance: float = 1.5,
+                    wall_min: float = 2.5, height_mm: Optional[float] = None) -> Dict:
+    """Pure-maths footprint of a rack: grid cells, block height and slot positions."""
+    from shapely.geometry import Polygon, box as sbox
+
+    if not 1 <= int(count) <= 60:
+        raise ValueError("a rack holds 1-60 phones")
+    if not 0 <= angle <= 60:
+        raise ValueError("rack lean angle must be 0-60 degrees")
+    if separator < 2.0:
+        raise ValueError("separator must be >= 2 mm")
+    if not 0.3 <= hold_frac <= 1.0:
+        raise ValueError("hold_frac must be between 0.3 and 1.0")
+    vert, across, thick = _rack_dims(phone_dims, stance)
+    W, T, L = across + 2 * clearance, thick + 2 * clearance, vert + 2 * clearance
+    a = math.radians(angle)
+    floor_z = rack_floor_z(stance, cable_groove, groove_depth, floor_clearance)
+    H = float(height_mm) if height_mm else floor_z + hold_frac * L * math.cos(a)
+    if H < floor_z + 15.0:
+        raise ValueError(f"rack height {H:.0f} mm leaves less than 15 mm of slot above the floor ({floor_z:.1f} mm)")
+    pitch = (T + separator) / math.cos(a)
+    pts = [(-T / 2, 0.0), (T / 2, 0.0), (T / 2, L + 200), (-T / 2, L + 200)]
+    rot = [(y * math.cos(a) + z * math.sin(a), z * math.cos(a) - y * math.sin(a)) for y, z in pts]
+    zmin = min(z for _, z in rot)
+    rot = [(y, z - zmin + floor_z) for y, z in rot]
+    ymin, _, ymax, _ = Polygon(rot).intersection(sbox(-1e6, floor_z, 1e6, H)).bounds
+    span = (int(count) - 1) * pitch + (ymax - ymin)
+    nx, ny = _cells_for(W, wall_min), _cells_for(span, end_wall)
+    return {"nx": nx, "ny": ny, "W": W, "T": T, "L": L, "H": H, "floor_z": floor_z, "pitch": pitch,
+            "span": span, "ymid0": (ymin + ymax) / 2, "angle": float(angle), "stance": stance,
+            "rise": rack_rise(phone_dims, clearance, stance, angle, cable_groove, groove_depth, floor_clearance)}
+
+
+def create_phone_rack_block(
+    phone: Union[str, PhoneSpec, None] = None,
+    count: int = 5,
+    phone_dims: Sequence[float] = S23_DIMS,
+    clearance: Optional[float] = None,
+    stance: str = "portrait",
+    angle: float = 0.0,
+    separator: float = 5.0,
+    end_wall: float = 6.0,
+    hold_frac: float = 0.6,
+    cable_groove: bool = True,
+    groove_depth: float = 10.0,
+    vent: bool = True,
+    finger_scoops: bool = True,
+    scoop_radius: float = 14.0,
+    floor_clearance: float = 1.5,
+    wall_min: float = 2.5,
+    height_mm: Optional[float] = None,
+    return_info: bool = False,
+):
+    """One block holding ``count`` phones side by side, after the Maker Club phone rack.
+
+    * Slots are stacked along Y, ``separator`` mm apart (measured square to the
+      slot), with ``end_wall`` mm of material at both ends; the grid grows to fit
+      any ``count`` (the caller splits racks that outgrow the printer bed).
+    * The block only reaches ``hold_frac`` of the phone's height so the rest sticks
+      out and is easy to grab; ``angle`` leans the phones back (towards +Y) when the
+      case is too shallow for upright phones.
+    * ``stance="portrait"`` stands phones on their short edge with a cable groove
+      under each phone (plug and cable exit either side); ``"landscape"`` stands them on
+      a long edge and opens a notch in both end walls for the plug.
+    * ``vent`` cuts arch-topped windows through the separators for airflow, leaving
+      ribs between them; finger scoops are cut into the top at both ends.
+
+    Returns ``(block, nx, ny)`` or, with ``return_info``, ``(block, nx, ny, info)``.
+    """
+    if phone is not None:
+        spec = get_phone(phone) if isinstance(phone, str) else phone
+        phone_dims = spec.dims
+        if clearance is None:
+            clearance = spec.clearance
+    if clearance is None:
+        clearance = DEFAULT_CLEARANCE
+    plan = phone_rack_plan(phone_dims, count, clearance, stance, angle, separator, end_wall, hold_frac,
+                           cable_groove, groove_depth, floor_clearance, wall_min, height_mm)
+    nx, ny, W, T, L, H = (plan[k] for k in ("nx", "ny", "W", "T", "L", "H"))
+    floor_z, pitch = plan["floor_z"], plan["pitch"]
+    a = math.radians(angle)
+    cx, cy = nx * GRID / 2, ny * GRID / 2
+    n = int(count)
+
+    def slot_y(i: int) -> float:                       # y of slot i's axis (bottom-face centre)
+        return cy + i * pitch - (plan["ymid0"] * 2 + (n - 1) * pitch) / 2
+
+    def tilted(length_x: float):
+        c = cq.Workplane("XY").box(length_x, T, L + 200, centered=(True, True, False))
+        if length_x == W:
+            c = _safe_fillet(c, "|Z", min(2.0, T / 2 - 0.05))
+        c = c.rotate((0, 0, 0), (1, 0, 0), -angle)
+        return c, c.val().BoundingBox().zmin
+
+    cutter, zmin0 = tilted(W)
+    shift = floor_z - zmin0
+    slots = [cutter.translate((cx, slot_y(i), shift)).val() for i in range(n)]
+    block = create_base_block(nx, ny, H).cut(cq.Workplane("XY").add(cq.Compound.makeCompound(slots)))
+
+    z_foot = FOOT_H + floor_clearance
+    if cable_groove and stance == "portrait":
+        gw = max(5.0, T - 4.0)                         # leaves ~2 mm ledges for the phone's bottom edge
+        gh = floor_z + (T / 2) * math.sin(a) + 0.5 - z_foot
+        for i in range(n):
+            block = block.cut(cq.Workplane("XY").box(nx * GRID + 2, gw, gh, centered=(True, True, False))
+                              .translate((cx, slot_y(i), z_foot)))
+    elif cable_groove and stance == "landscape":
+        z_lo = floor_z + 0.5 * L * math.cos(a) - 8.0   # the port sits half way up the phone's end
+        notch, nz0 = tilted(nx * GRID + 2)
+        keep = cq.Workplane("XY").box(nx * GRID + 4, ny * GRID + 4 + 400, H + 50 - z_lo,
+                                      centered=(True, True, False)).translate((cx, cy, z_lo))
+        for i in range(n):
+            block = block.cut(notch.translate((cx, slot_y(i), shift)).intersect(keep))
+
+    if vent:
+        ribs, wwin, margin = 6.0, 14.0, 8.0
+        z0, z1 = floor_z + 10.0, H - 6.0
+        h = z1 - z0
+        k = int((W - 2 * margin + ribs) // (wwin + ribs))
+        if k >= 1 and h >= wwin:
+            tot = k * wwin + (k - 1) * ribs
+            profile = [(-wwin / 2, 0), (wwin / 2, 0), (wwin / 2, h - wwin / 2), (0, h), (-wwin / 2, h - wwin / 2)]
+            for j in range(k):
+                x = cx - tot / 2 + wwin / 2 + j * (wwin + ribs)
+                win = (cq.Workplane("XZ").polyline([(x + px, z0 + pz) for px, pz in profile]).close()
+                       .extrude(-(ny * GRID + 2)).translate((0, -1, 0)))
+                block = block.cut(win)
+
+    if finger_scoops:
+        for sx in (-1, 1):
+            block = block.cut(_y_cylinder(cx + sx * W / 2, H, scoop_radius, -1, ny * GRID + 2))
+    block = block.clean()
+    info = dict(plan, count=n, height_mm=H)
+    return (block, nx, ny, info) if return_info else (block, nx, ny)
+
+
+# --------------------------------------------------------------------------- #
 # STL -> BREP
 # --------------------------------------------------------------------------- #
 def offset_mesh(mesh: trimesh.Trimesh, offset: float, max_scale: float = 2.5) -> trimesh.Trimesh:

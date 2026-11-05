@@ -236,25 +236,63 @@ with tab_phone:
                     f'{spec.thickness} mm (L × W × T) &nbsp;·&nbsp; recommended clearance +{spec.clearance} mm</div>',
                     unsafe_allow_html=True)
     c = st.columns(3)
-    n_phones = c[0].number_input("Number of slots", 0, 12, 2, key="n_phones")
+    n_phones = c[0].number_input("Number of phones", 0, 40, 2, key="n_phones",
+                                 help="All phones go into one rack block. A rack that would be longer than your printer bed "
+                                      "is split into the fewest equal racks that each fit.")
     clearance = c[1].slider("Clearance per side (mm)", 0.2, 1.5, float(spec.clearance), 0.1, key=f"clr_{spec.key}",
                             help="Tolerance added around the phone. Recommended value comes from the phone database.")
-    scoops = c[2].checkbox("Side finger scoops", True, key="scoops")
+    scoops = c[2].checkbox("Finger scoops", True, key="scoops")
     ix, iy, iz = current_interior()
-    max_block_h = max(float(int(iz - 2)), 20.0)
     c = st.columns(3)
-    auto_tilt = c[0].checkbox("Auto-tilt to fit case height", True, key="auto_tilt",
-                              help="Picks the smallest tilt that lets the phone sit below the lid line.")
-    fit = geo.min_tilt_for_height(spec.dims, clearance, iz - 1.0)
-    if auto_tilt:
-        angle = fit if fit is not None else 85
-        c[1].metric("Tilt from vertical", f"{angle}°")
-        if fit is None:
-            st.warning("This phone cannot lie low enough for this case even at 85°; it will stick out of the lid line.")
+    rack_style = c[0].selectbox("Rack style", ["Auto (fits the case)", "Upright", "On its long edge", "Flat single slots"],
+                                key="rack_style",
+                                help="Upright: phones stand on their short edge like the Maker Club rack. On its long edge: "
+                                     "much lower, for shallow cases. Flat single slots: one block per phone for very low cases. "
+                                     "Auto picks the first that lets the phones clear the lid.")
+    cable_groove = c[1].checkbox("Cable groove", True, key="cable_groove",
+                                 help="Room under each phone (upright) or a notch in the end walls (on its long edge) for the plug and cable.")
+    vent = c[2].checkbox("Airflow windows", True, key="vent", help="Arch-topped windows through the separators, as in the reference rack.")
+    c = st.columns(3)
+    hold = c[0].slider("Holder height (% of phone)", 40, 100, 60, 5, key="hold_pct",
+                       help="How much of each phone the rack holds; the rest sticks out so it is easy to grab.") / 100.0
+    sep = c[1].slider("Separator wall (mm)", 3.0, 10.0, 5.0, 0.5, key="sep_wall")
+    manual_lean = c[2].checkbox("Set lean manually", False, key="manual_lean")
+
+    def lean_for(stance_):
+        return next((a_ for a_ in range(0, 61) if geo.rack_rise(spec.dims, clearance, stance_, a_, cable_groove) <= iz - 1.0), None)
+
+    rack_flat, rack_stance, angle = False, "portrait", 0
+    if rack_style.startswith("Auto"):
+        pose = geo.choose_rack_pose(spec.dims, clearance, iz - 1.0, cable_groove)
+        if pose is None:
+            rack_flat = True
+        else:
+            rack_stance, angle = pose
+    elif rack_style == "Flat single slots":
+        rack_flat = True
     else:
-        angle = c[1].slider("Tilt from vertical (°)", 0, 85, 15, key="angle")
-    phone_h = c[2].slider("Block height (mm)", 25.0, max(max_block_h, 26.0), min(70.0, max_block_h), 1.0,
-                          key=f"phone_h_{pk.CUSTOM_KEY if ss.case_key == pk.CUSTOM_KEY else ss.case_key}")
+        rack_stance = "portrait" if rack_style == "Upright" else "landscape"
+        fit = lean_for(rack_stance)
+        angle = fit if fit is not None else 60
+        if fit is None and not manual_lean:
+            st.warning("These phones cannot clear the lid in this case even leaning back 60°; they will stick out of the lid line.")
+    if rack_flat:
+        fit = geo.min_tilt_for_height(spec.dims, clearance, iz - 1.0)
+        angle = fit if fit is not None else 85
+        phone_h = float(min(70.0, max(20.0, int(iz - 2))))
+        st.info(f"Flat single slots: one block per phone, tilted {angle}° from vertical"
+                + ("" if fit is not None else " (these phones still stick out of the lid line)")
+                + (". Chosen because no rack pose clears the lid in this case." if rack_style.startswith("Auto") else "."))
+        if manual_lean:
+            angle = c[2].slider("Tilt from vertical (°)", 0, 85, int(angle), key="angle_flat")
+    else:
+        phone_h = float(min(70.0, max(20.0, int(iz - 2))))
+        if manual_lean:
+            angle = st.slider("Lean back from vertical (°)", 0, 60, int(angle), key="angle_rack")
+        pl = geo.phone_rack_plan(spec.dims, max(int(n_phones), 1), clearance, rack_stance, angle, sep, 6.0, hold, cable_groove)
+        st.markdown(f'<div class="pk-spec"><b>{"Upright" if rack_stance == "portrait" else "On its long edge"}</b>, lean {angle}° &nbsp;·&nbsp; '
+                    f'{int(n_phones)} phone(s) → {pl["nx"]} × {pl["ny"]} cells, {pl["H"]:.0f} mm tall block, phones reach {pl["rise"]:.0f} mm '
+                    f'(case interior {iz:.0f} mm)</div>', unsafe_allow_html=True)
 
     st.subheader("USB-C hub")
     use_hub = st.checkbox("Include a USB-C hub block", True, key="use_hub")
@@ -637,7 +675,8 @@ with tab_out:
     def project_sig() -> str:
         """Everything build() reads, so the results can be flagged as out of date."""
         return repr((current_interior(), ss.case_key, ss.bed_x, ss.get("bed_y"), ss.bed_z, bool(ss.bed_round), bool(ss.interlock),
-                     int(n_phones), spec.key, clearance, angle, phone_h, scoops, use_hub, hub_dims, cable_pt,
+                     int(n_phones), spec.key, spec.dims, clearance, angle, phone_h, scoops, rack_flat, rack_stance, sep, hold, cable_groove,
+                     vent, use_hub, hub_dims, cable_pt,
                      [dict(i) for i in ss.stl_items], [dict(i) for i in ss.scan_items]))
 
     def build():
@@ -647,9 +686,12 @@ with tab_out:
         org = PackoutOrganizer(None if custom else pk.CASES[ss.case_key].label,
                                interior=(ix, iy, iz) if custom else None, bed=bed, bed_round=bool(ss.bed_round),
                                interlock=bool(ss.interlock))
-        if n_phones:
+        if n_phones and rack_flat:
             org.add_phone_slots(int(n_phones), phone=spec, clearance=clearance, angle=float(angle),
                                 height_mm=float(phone_h), finger_scoops=scoops)
+        elif n_phones:
+            org.add_phone_rack(int(n_phones), phone=spec, clearance=clearance, stance=rack_stance, angle=float(angle),
+                               separator=sep, hold_frac=hold, cable_groove=cable_groove, vent=vent, finger_scoops=scoops)
         for it in ss.stl_items:
             if it.get("on_base"):
                 org.add_stl_on_base(it["path"], name=it["name"], grid_units=(it["gx"], it["gy"]),
@@ -671,7 +713,7 @@ with tab_out:
 
     st.subheader("Generate")
     st.caption(f"{ss.case_key if ss.case_key == pk.CUSTOM_KEY else pk.CASES[ss.case_key].label} · "
-               f"{int(n_phones)} phone slot(s) · {len(ss.stl_items)} custom STL block(s) · {len(ss.scan_items)} scanned block(s) · hub {'on' if use_hub else 'off'}")
+               f"{int(n_phones)} phone(s) · {len(ss.stl_items)} custom STL block(s) · {len(ss.scan_items)} scanned block(s) · hub {'on' if use_hub else 'off'}")
     if st.button("Generate project", type="primary", key="gen"):
         try:
             with st.spinner("Building CAD geometry..."):
