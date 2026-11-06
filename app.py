@@ -893,14 +893,30 @@ with tab_out:
         st.write("Fits bed: " + ("✅" if org.fits_bed(parts[name]) else "❌"))
 
     st.subheader("Export")
-    fmt = st.radio("Format", ["stl", "step", "both"], horizontal=True, key="fmt")
-    if st.button("Prepare zip", key="zip_btn"):
-        with st.spinner("Exporting..."):
-            if org.interlock:                          # clip count follows the current (pinned) layout
-                org.layout()
-                parts = org.build_parts()
-            ss.zip[fmt] = org.export_zip(parts, fmt)
-    if fmt in ss.zip:
-        st.download_button(f"Download packout_inserts_{fmt}.zip", ss.zip[fmt], file_name=f"packout_inserts_{fmt}.zip",
-                           mime="application/zip", type="primary", on_click="ignore")
-        st.caption("The zip's README.txt records the layout as of when it was prepared; prepare it again after changing pins.")
+    st.caption("One file per kind of part. Identical parts are listed once with the number to print; the dovetail clip is "
+               "a single model, so print as many copies as you need.")
+    fmt = st.radio("Format", ["stl", "step"], horizontal=True, key="fmt")
+    if org.interlock:                              # clip count follows the current (pinned) layout
+        org.layout()
+        parts = ss.parts = org.build_parts()
+    scan_profiles = {it.name: it.profile for it in org.items if it.profile is not None}
+    for n_, (fname, wp_, qty) in enumerate(org.unique_parts(parts)):
+        key_ = (fname, fmt, qty)
+        row = st.columns([4, 1, 2, 2])
+        row[0].markdown(f"**{html.escape(fname)}.{fmt}**")
+        row[1].markdown(f"× {qty}")
+        if key_ not in ss.zip:
+            if row[2].button("Prepare file", key=f"prep_{n_}_{fname}_{fmt}"):
+                with st.spinner(f"Exporting {fname}..."):
+                    ss.zip[key_] = org.export_part(wp_, fmt)
+                st.rerun()
+        else:
+            row[2].download_button(f"Download {fmt.upper()}", ss.zip[key_], file_name=f"{fname}.{fmt}",
+                                   mime="model/stl" if fmt == "stl" else "model/step", key=f"dl_{n_}_{fname}_{fmt}",
+                                   type="primary", on_click="ignore")
+        if fname in scan_profiles:
+            from src import scanner
+            row[3].download_button("Outline SVG", scanner.polygon_to_svg(scan_profiles[fname]), file_name=f"{fname}.svg",
+                                   mime="image/svg+xml", key=f"svg_{n_}_{fname}", on_click="ignore")
+    st.download_button("Layout plan (.txt)", org.summary(), file_name="packout_layout.txt", mime="text/plain",
+                       key="dl_layout_txt", on_click="ignore")

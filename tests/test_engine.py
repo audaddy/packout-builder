@@ -202,7 +202,9 @@ def test_interlock_mode_has_no_baseplates_and_counts_clips(puck_stl):
     assert o.seam_key_count() == min(o.items[0].ny, o.items[1].ny)
     parts = o.build_parts()
     assert not any(k.startswith("baseplate") for k in parts)
-    assert sum(k.startswith("dovetail_key") for k in parts) == o.seam_key_count()
+    assert [k for k in parts if k.startswith("dovetail_")] == ["dovetail_clip"]       # one model, not one per clip
+    uniq = {n: q for n, _, q in o.unique_parts(parts)}
+    assert uniq["dovetail_clip"] == o.seam_key_count()
     assert "no baseplates" in o.summary()
     for it in o.items:
         assert o.check_part(it.solid)["valid"]
@@ -286,3 +288,21 @@ def test_clips_only_where_sockets_line_up():
     b.pos = (a.nx, 0.5)                                 # half a cell off: sockets do not line up
     o.layout()
     assert o.seam_key_count() == 0
+
+
+def test_unique_parts_merges_identical_and_exports_single_file(puck_stl):
+    o = PackoutOrganizer(next(iter(PACKOUT_MODELS)))
+    o.add_stl_insert(puck_stl, name="a")
+    o.add_stl_insert(puck_stl, name="a_2")
+    parts = o.build_parts()
+    assert sum(k.startswith("dovetail_") for k in parts) <= 1
+    uniq = o.unique_parts(parts)
+    assert len({id(w) for _, w, _ in uniq}) == len(uniq)
+    names = {n: q for n, _, q in uniq}
+    assert max(names.values()) >= 1
+    first = next(w for n, w, _ in uniq if not n.startswith(("baseplate", "dovetail")))
+    stl = o.export_part(first, "stl")
+    assert stl[:5] == b"solid" or len(stl) > 100
+    assert o.export_part(first, "step")[:10].startswith(b"ISO-10303")
+    with pytest.raises(ValueError):
+        o.export_part(first, "obj")

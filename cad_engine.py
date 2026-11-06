@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import tempfile
+import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -458,12 +459,47 @@ class PackoutOrganizer:
         if include_baseplates:
             parts.update(self.build_baseplates())
         if include_keys:
-            n = self.seam_key_count()
-            if n:
-                key = geo.create_dovetail_key()
-                for i in range(n):
-                    parts[f"dovetail_key_{i + 1:02d}"] = key
+            if self.seam_key_count():                  # one clip model; the count is shown as its quantity
+                parts["dovetail_clip" if self.interlock else "dovetail_key"] = geo.create_dovetail_key()
         return parts
+
+    def unique_parts(self, parts: Dict[str, cq.Workplane]) -> List[Tuple[str, cq.Workplane, int]]:
+        """``(file name, solid, quantity)`` with identical parts merged: equal baseplate tiles, equal split racks or
+        clusters, and the single clip.  The quantity of the clip is how many the layout needs."""
+        groups: Dict[tuple, List[str]] = {}
+        for name, wp in parts.items():
+            v = wp.val()
+            bb = v.BoundingBox()
+            sig = (round(v.Volume(), 1), tuple(round(x, 1) for x in (bb.xlen, bb.ylen, bb.zlen)))
+            groups.setdefault(sig, []).append(name)
+        out = []
+        for names in groups.values():
+            first = names[0]
+            if first.startswith("dovetail_"):
+                qty = self.seam_key_count()
+            else:
+                qty = len(names)
+                if qty > 1:                            # name_1, name_2 ... -> name
+                    stems = {re.sub(r"_\d+$", "", n) for n in names}
+                    if len(stems) == 1:
+                        first = stems.pop()
+            out.append((first, parts[names[0]], qty))
+        return out
+
+    @staticmethod
+    def export_part(wp: cq.Workplane, fmt: str = "stl") -> bytes:
+        """One part as an STL or STEP file."""
+        fmt = fmt.lower()
+        if fmt not in ("stl", "step"):
+            raise ValueError("fmt must be 'stl' or 'step'")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, f"part.{fmt}")
+            if fmt == "stl":
+                cq.exporters.export(wp, p, tolerance=0.01, angularTolerance=0.1)
+            else:
+                cq.exporters.export(wp, p)
+            with open(p, "rb") as f:
+                return f.read()
 
     # ---------------------------------------------------------------- export
     @staticmethod

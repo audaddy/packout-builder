@@ -484,3 +484,12 @@ def test_phone_rack_validation_and_pose_choice():
     assert geo.choose_rack_pose(dims, 0.6, 98)[0] == "landscape"         # 99 mm case: stands on its long edge
     assert geo.choose_rack_pose(dims, 0.6, 400) == ("portrait", 0)       # deep enough: upright like the reference
     assert geo.choose_rack_pose(dims, 0.6, 45) is None                   # low-profile case: flat single slots
+
+
+def test_cable_groove_fits_a_standard_usb_c_plug():
+    for T in (8.0, 8.8, 12.0, 25.0):
+        w = geo.cable_groove_width(T)
+        assert w >= 5.0
+        assert w >= min(geo.USB_C_PLUG_THICK, T - 2.0) - 1e-9            # the plug's thin side fits
+        assert (T - w) / 2 >= 1.0 - 1e-9 or w == 5.0                      # the phone keeps a ledge to rest on
+    assert geo.cable_groove_width(8.8) == pytest.approx(6.8)

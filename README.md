@@ -22,19 +22,19 @@ Everything runs on your own computer and only that computer can reach it; nothin
 
 * `src/printers.py` – printer presets: Bambu Lab P2S, Prusa XL, Prusa CORE One L, Prusa HT90 (round Ø300 bed; tiles must fit the circle diagonally) or Custom.
 * `src/cnc.py` – Shapeoko 4 XL G-code for scanned-tool pockets (see below).
-* Phone racks (tab 2): all phones go into **one rack block** after the Maker Club phone rack - slots side by side with 5 mm separators, a holder low enough that ~40% of each phone sticks out, a cable groove under each phone, arch-topped airflow windows and finger scoops. Any number of phones: the grid grows with the count, and a rack longer than the printer bed is split into the fewest equal racks that fit. Style *Auto* picks upright, on its long edge (low), or flat single slots so the phones clear the lid.
+* Phone racks (tab 2): all phones go into **one rack block** after the Maker Club phone rack - slots side by side with 5 mm separators, a holder low enough that ~40% of each phone sticks out, a cable groove under each phone, arch-topped airflow windows and finger scoops. Any number of phones: the grid grows with the count, and a rack longer than the printer bed is split into the fewest equal racks that fit. Style *Auto* picks upright, on its long edge (low), or flat single slots so the phones clear the lid. The cable groove under each phone is sized for a standard USB-C plug (spec overmold 6.5 mm thick, plus 0.5 mm play), leaving a 1 mm ledge each side for the phone to rest on.
 * `src/phone_db.py` – phone presets (Galaxy S23 / S23+ / S23 Ultra) + `register_phone()` / JSON loading (`assets/phones_custom.json`).
 * `src/packout_db.py`, `src/assets/packout_images.py` – case specs and offline SVG thumbnails.
 * `src/theme.py`, `.streamlit/config.toml` – Milwaukee red/black dark theme (restart Streamlit after editing config.toml). Font is Helvetica Neue (Milwaukee's site font; system font on macOS/iOS, Helvetica/Arial elsewhere).
 * `src/scanner.py` – photo scanner: calibration-sheet PDF, ArUco homography, silhouette extraction, shapely smoothing / clearance / finger scoops, SVG and DXF profile export.
 * `src/geometry.py` – CadQuery builders (custom STL blocks default to a *drop-in outline* pocket – the part's top-down silhouette cut straight down, so stands/hooks/overhangs don't fill the block; `pocket="exact"` gives the 3D negative): phone slot, STL insert, scanned-contour block, USB-C hub, baseplate tile, dovetail key.
-* `cad_engine.py` – `PackoutOrganizer`: tiling to the printer bed, layout, validation, STL/STEP zip export.
+* `cad_engine.py` – `PackoutOrganizer`: tiling to the printer bed, layout, validation, per-part STL/STEP export (`unique_parts`, `export_part`; `export_zip` is still available from code).
 * `app.py` – Streamlit UI (layout view, 3D preview, print checks, export).
 * `assets/sample_watch_charger.stl` is a **placeholder puck**; upload the real Galaxy Watch Ultra charger STL (Z-up) in the UI.
 
 Notes: by default (**Baseplate-free** option in tab 1) there are no baseplates: every block has a flat underside with a half dovetail
 socket at the middle of each cell edge, and blocks that touch are locked together with small loose bow-tie clips (the app counts
-them from the layout). Untick the option for Gridfinity feet on printed baseplate tiles joined by dovetail keys.
+them from the layout and exports a single clip file; print as many copies as the count says). Untick the option for Gridfinity feet on printed baseplate tiles joined by dovetail keys.
 
 Several copies (e.g. 6 watch stands): set **Copies** in the Custom STL tab. They are packed as tightly as possible onto **one base that
 hugs them** (no feet, flat underside). Spacing is not the bounding box: the charger recess is found in the model (`src/cluster.py`),

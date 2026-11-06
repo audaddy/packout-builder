@@ -226,6 +226,18 @@ def _rack_dims(phone_dims: Sequence[float], stance: str) -> Tuple[float, float, 
     raise ValueError(f"stance must be one of {RACK_STANCES}")
 
 
+# USB-C spec: the plug's overmold is at most 12.35 x 6.5 mm; the thin side has to fit the groove under a phone.
+USB_C_PLUG_THICK = 6.5
+USB_C_PLUG_WIDTH = 12.35
+
+
+def cable_groove_width(slot_thickness: float, plug_thick: float = USB_C_PLUG_THICK, play: float = 0.5,
+                       min_ledge: float = 1.0) -> float:
+    """Groove width (across the rack) under a phone: a standard USB-C overmold plus a little play, but always
+    leaving ``min_ledge`` mm of ledge each side for the phone to rest on."""
+    return max(5.0, min(plug_thick + play, slot_thickness - 2 * min_ledge))
+
+
 def rack_floor_z(stance: str, cable_groove: bool, groove_depth: float, floor_clearance: float = 1.5) -> float:
     """Height of the slot floor: portrait racks lift it to make room for the plug and cable underneath."""
     return FOOT_H + floor_clearance + (groove_depth if (cable_groove and stance == "portrait") else 0.0)
@@ -362,7 +374,7 @@ def create_phone_rack_block(
 
     z_foot = FOOT_H + floor_clearance
     if cable_groove and stance == "portrait":
-        gw = max(5.0, T - 4.0)                         # leaves ~2 mm ledges for the phone's bottom edge
+        gw = cable_groove_width(T)                     # standard USB-C plug; keeps ~1 mm ledges for the phone's bottom edge
         gh = floor_z + (T / 2) * math.sin(a) + 0.5 - z_foot
         for i in range(n):
             block = block.cut(cq.Workplane("XY").box(nx * GRID + 2, gw, gh, centered=(True, True, False))
